@@ -74,10 +74,12 @@ investing in the fix.
 
 ## Running the testbenches
 
-`tb_keyboard.sv` and `tb_multikey.sv` are self-contained Icarus Verilog
-testbenches instantiating this bridge exactly as `core_top.sv` wires it, to
-verify press/hold/release behaviour without real hardware. They can't be
-run directly against these files with Icarus (`brew install icarus-verilog`)
+`tb_keyboard.sv` (single key, incl. a long hold), `tb_multikey.sv` (two keys
+at once) and `tb_modifier.sv` (Shift+key combos, both press orders) are
+self-contained Icarus Verilog testbenches instantiating this bridge exactly
+as `core_top.sv` wires it, to verify press/hold/release behaviour without
+real hardware. All three pass as of the fixes documented above. They can't
+be run directly against these files with Icarus (`brew install icarus-verilog`)
 as-is: Icarus's SystemVerilog support has gaps that Quartus doesn't share
 (enum assignment needs an explicit cast, forward-referenced declarations
 need reordering, a `logic` port can't have both an initializer and a
