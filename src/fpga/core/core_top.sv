@@ -1276,8 +1276,8 @@ end*/
 reg [63:0] status;
 reg  status_set;
 reg  status_ack;
-wire [11:1] Fn;
-wire  [2:0] mod;
+reg  [11:1] Fn = 0;
+reg   [2:0] mod = 0;
 
 
 reg [31:0] pico_mem_rd;
