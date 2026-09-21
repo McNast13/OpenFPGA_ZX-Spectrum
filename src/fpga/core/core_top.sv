@@ -1939,14 +1939,38 @@ usb_keyboard usb_kbd
 	.ps2_key    ( ps2_key_usb )
 );
 
-// usb_keyboard's ps2_key output is combinational - derived through several
-// logic levels of the FIFO/arbiter/HID-decode state inside it, with no
-// register at the module boundary. Register it here before it reaches
-// keyboard.sv: on this design (93% ALM-full) that combined path was long
-// enough to violate clk_sys setup timing. keyboard.sv only edge-detects
-// ps2_key[10] toggling, so one extra clk_sys cycle of latency is harmless.
-reg [10:0] ps2_key;
-always @(posedge clk_sys) ps2_key <= ps2_key_usb;
+// usb_keyboard's ps2_key[10] ("strobe") is a PULSE from key_mgr: it goes
+// high for exactly one cycle on a make/break event and then back low on
+// its own (key_mgr.sv key_strobe_array, PRESS/HOLD_RELEASE states) - it
+// does not stay at a new level the way a real toggle bit would. pressed/
+// code are also purely combinational, continuously reflecting whichever
+// of the 14 HID slots the round-robin arbiter currently happens to be
+// looking at, not just the slot that just changed.
+//
+// keyboard.sv instead expects the MiSTer ps2_key convention: bit 10 is a
+// TOGGLE that flips once per real event and holds, with pressed/code
+// valid and stable at that moment - it reacts on ANY edge of bit 10, so
+// feeding it usb_kbd's raw pulse (or a plain register of it, as before)
+// makes it also fire on the pulse's *falling* edge, by which point the
+// arbiter has moved on and pressed/code no longer describe that key.
+// That's what produced "sticky" keys - stuck until the next real event
+// gave keyboard.sv a coherent sample again.
+//
+// Fix: only look at usb_kbd's strobe rising edge (the one unambiguous
+// "a real event happened" signal) and latch pressed/code + flip our own
+// toggle bit right then, instead of registering the live combinational
+// bus every cycle.
+reg        ps2_strobe_d = 0;
+reg        ps2_toggle   = 0;
+reg  [9:0] ps2_key_latched = 0;
+always @(posedge clk_sys) begin
+	ps2_strobe_d <= ps2_key_usb[10];
+	if (ps2_key_usb[10] & ~ps2_strobe_d) begin
+		ps2_toggle      <= ~ps2_toggle;
+		ps2_key_latched <= ps2_key_usb[9:0];
+	end
+end
+wire [10:0] ps2_key = {ps2_toggle, ps2_key_latched};
 
 wire       recreated_zx = 1'b0; // alternate non-QWERTY "Recreated ZX Spectrum" mapping - not exposed in the Pocket menu yet
 wire       ghosting     = 1'b0; // emulate real keyboard-matrix ghosting - not exposed in the Pocket menu yet
