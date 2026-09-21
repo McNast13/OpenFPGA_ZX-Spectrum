@@ -70,26 +70,24 @@ module kb_fifo
 
     //! ------------------------------------------------------------------------
     //! Key Repeat Controller
+    //!
+    //! MODIFIED from upstream: disabled. This module runs at the host
+    //! core's full clk_sys (100MHz+ here), so INIT_REPEAT_DELAY/REPEAT_RATE
+    //! (tens of cycles) fire far faster than the downstream 14-slot key
+    //! scanner can drain each FIFO entry (~70 cycles). During any sustained
+    //! key hold this filled the 7-deep FIFO and kept it full; the buffer
+    //! controller below silently drops writes while full
+    //! (`if (wr_en && !full)`), so a real key-release landing while full
+    //! was lost entirely, leaving the key stuck until an unrelated future
+    //! keypress happened to reveal the true state. Real press/release
+    //! events don't depend on this block - they write on genuine din
+    //! changes below - so disabling it only removes synthetic
+    //! typematic-repeat writes, not correctness for hold/release.
     //! ------------------------------------------------------------------------
     always_ff @(posedge clk) begin : fifoKeyRepeat
-        if (din != 'h0 && din == prev_din && !full) begin
-            if (delay_counter < INIT_REPEAT_DELAY) begin
-                delay_counter <= delay_counter + 4'h1;
-            end
-            else if (repeat_counter < REPEAT_RATE) begin
-                delay_counter  <= 4'h0;  // Reset delay_counter after reaching the initial delay
-                repeat_counter <= repeat_counter + 4'h1;
-            end
-            else begin
-                repeat_request <= ~repeat_request;
-                repeat_counter <= 0;
-            end
-        end
-        else if (din != prev_din || din == 'h0 || wr_en) begin
-            delay_counter  <= 4'h0;
-            repeat_counter <= 4'h0;
-            repeat_request <= 1'b0;
-        end
+        delay_counter  <= 4'h0;
+        repeat_counter <= 4'h0;
+        repeat_request <= 1'b0;
     end
 
     //! ------------------------------------------------------------------------
