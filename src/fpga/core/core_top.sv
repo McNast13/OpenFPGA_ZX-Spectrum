@@ -1926,18 +1926,27 @@ end
 // Converts the Pocket's docked-USB-keyboard controller-bus report (cont3_*)
 // into a MiSTer-style ps2_key strobe, then decodes that into the Spectrum
 // keyboard matrix with the original MiSTer keyboard.sv. See src/fpga/core/usbkbd/.
-wire [10:0] ps2_key;
+wire [10:0] ps2_key_usb;
 
 usb_keyboard usb_kbd
 (
-	.clk        ( clk_sys    ),
-	.clk_sync   ( clk_sys    ),
-	.reset      ( reset      ),
-	.cont3_key  ( cont3_key  ),
-	.cont3_joy  ( cont3_joy  ),
-	.cont3_trig ( cont3_trig ),
-	.ps2_key    ( ps2_key    )
+	.clk        ( clk_sys     ),
+	.clk_sync   ( clk_sys     ),
+	.reset      ( reset       ),
+	.cont3_key  ( cont3_key   ),
+	.cont3_joy  ( cont3_joy   ),
+	.cont3_trig ( cont3_trig  ),
+	.ps2_key    ( ps2_key_usb )
 );
+
+// usb_keyboard's ps2_key output is combinational - derived through several
+// logic levels of the FIFO/arbiter/HID-decode state inside it, with no
+// register at the module boundary. Register it here before it reaches
+// keyboard.sv: on this design (93% ALM-full) that combined path was long
+// enough to violate clk_sys setup timing. keyboard.sv only edge-detects
+// ps2_key[10] toggling, so one extra clk_sys cycle of latency is harmless.
+reg [10:0] ps2_key;
+always @(posedge clk_sys) ps2_key <= ps2_key_usb;
 
 wire       recreated_zx = 1'b0; // alternate non-QWERTY "Recreated ZX Spectrum" mapping - not exposed in the Pocket menu yet
 wire       ghosting     = 1'b0; // emulate real keyboard-matrix ghosting - not exposed in the Pocket menu yet
