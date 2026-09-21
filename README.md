@@ -31,6 +31,8 @@ boot.rom is a collection of required ROMs, however it does not contain a full se
 
 ### Pocket specfic features
 
+USB keyboard support - plug a USB keyboard into the Analogue Dock and it drives the Spectrum keyboard matrix directly (standard MiSTer PS/2 mapping). Ctrl/Alt/Shift+F11 reset shortcuts and Alt+F1-F6 machine-arch shortcuts work from the real keyboard too.
+
 Virtual keyboard (very basic for now - A press key, X toggle shifts)
 
 Key Mapped Joystick (allows Left, Right, Up, Down, A, B, X, Y, L Trig and R Trig to be mapped to keyboard keys).
@@ -50,6 +52,12 @@ L Trig & Select - Issue NMI
 
 
 ### Change Log
+
+### Unreleased (this fork)
+
+Added - Real USB keyboard support via the Analogue Dock. Wires the existing (previously unused) MiSTer `keyboard.sv` PS/2-to-matrix decoder up to the Pocket's docked-keyboard controller-bus report, using a small USB-HID-to-PS/2 bridge vendored from the OpenGateware project (`src/fpga/core/usbkbd/`, MIT licensed).
+
+Fixed - `Fn`/`mod` (F-key and modifier shortcuts) were declared as `wire` but driven procedurally from the OSD soft CPU, which would fail synthesis. They are now driven correctly and merged with the new hardware-keyboard source.
 
 ### v0.7.0-beta
 

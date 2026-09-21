@@ -1276,8 +1276,17 @@ end*/
 reg [63:0] status;
 reg  status_set;
 reg  status_ack;
-wire [11:1] Fn;
-wire  [2:0] mod;
+
+// Fn/mod are driven from two sources: the picorv32 OSD/virtual-keyboard soft
+// CPU (Fn_pico/mod_pico) and the real USB keyboard bridge (Fn_hw/mod_hw, see
+// the "USB Keyboard" section below). Combine them so F-key/modifier shortcuts
+// (arch select, pause, reset, tape control, NMI) work from either source.
+reg  [11:1] Fn_pico = 0;
+reg   [2:0] mod_pico = 0;
+wire [11:1] Fn_hw;
+wire  [2:0] mod_hw;
+wire [11:1] Fn  = Fn_pico | Fn_hw;
+wire  [2:0] mod = mod_pico | mod_hw;
 
 
 reg [31:0] pico_mem_rd;
@@ -1661,8 +1670,8 @@ begin
 			32'h3000_05_3c: joykb_keyrow7F[9]<=pico_mem_wr[4:0];
 			
 			32'h3000_06_00: begin
-				Fn<=pico_mem_wr[10:0];
-				mod<=pico_mem_wr[18:16];
+				Fn_pico<=pico_mem_wr[10:0];
+				mod_pico<=pico_mem_wr[18:16];
 			end
 			
 			32'h4000_00_00: ioctl_size_req<=pico_mem_wr;
@@ -1913,18 +1922,40 @@ end
 //reg  [4:0] kbd_dout;
 //always @(posedge clk_sys) kbd_dout <= key_data;
 
-/*
-wire [11:1] Fn;
-wire  [2:0] mod;
-wire  [4:0] key_data;
-wire recreated_zx = status[37];
-wire ghosting     = status[36];
-keyboard kbd( .* );
+////////////////////   USB Keyboard   ////////////////////
+// Converts the Pocket's docked-USB-keyboard controller-bus report (cont3_*)
+// into a MiSTer-style ps2_key strobe, then decodes that into the Spectrum
+// keyboard matrix with the original MiSTer keyboard.sv. See src/fpga/core/usbkbd/.
+wire [10:0] ps2_key;
 
-wire  [7:0] mouse_data=8'h0;;
+usb_keyboard usb_kbd
+(
+	.clk        ( clk_sys    ),
+	.clk_sync   ( clk_sys    ),
+	.reset      ( reset      ),
+	.cont3_key  ( cont3_key  ),
+	.cont3_joy  ( cont3_joy  ),
+	.cont3_trig ( cont3_trig ),
+	.ps2_key    ( ps2_key    )
+);
 
-mouse mouse( .*, .reset(cold_reset), .addr(addr[10:8]), .sel(), .dout(mouse_data), .btn_swap(status[35]));
-*/
+wire       recreated_zx = 1'b0; // alternate non-QWERTY "Recreated ZX Spectrum" mapping - not exposed in the Pocket menu yet
+wire       ghosting     = 1'b0; // emulate real keyboard-matrix ghosting - not exposed in the Pocket menu yet
+wire [4:0] hw_key_data;
+
+keyboard kbd
+(
+	.reset       ( reset        ),
+	.clk_sys     ( clk_sys      ),
+	.ps2_key     ( ps2_key      ),
+	.recreated_zx( recreated_zx ),
+	.ghosting    ( ghosting     ),
+	.addr        ( addr         ),
+	.key_data    ( hw_key_data  ),
+	.Fn          ( Fn_hw        ),
+	.mod         ( mod_hw       )
+);
+
 wire       kemp_sel = addr[5:0] == 6'h1F;
 //reg  [7:0] kemp_dout;
 
@@ -1969,7 +2000,7 @@ wire [4:0] joy_kbd = osd_active?5'b11111:({5{addr[12]}} | ~(joys1 | joyc1)) & ({
 
 reg  [4:0] kbd_dout;
 
-always @(posedge clk_sys) kbd_dout <= key_data & joy_kbd;
+always @(posedge clk_sys) kbd_dout <= key_data & joy_kbd & hw_key_data;
 
 //////////////////   MF128   ///////////////////
 reg         mf128_mem;
