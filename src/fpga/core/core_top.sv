@@ -1926,17 +1926,31 @@ end
 // Converts the Pocket's docked-USB-keyboard controller-bus report (cont3_*)
 // into a MiSTer-style ps2_key strobe, then decodes that into the Spectrum
 // keyboard matrix with the original MiSTer keyboard.sv. See src/fpga/core/usbkbd/.
+//
+// cont3_key/cont3_joy/cont3_trig are APF bridge inputs, not natively in the
+// clk_sys domain - cont1_key gets the same treatment (via synch_3) before
+// use elsewhere in this file. Without it, a bus sampled mid-transition can
+// tear (different bits caught on different sides of a change), which
+// apf2hid's own pipeline downstream doesn't fix since it just re-registers
+// whatever value it was handed in the clk_sys domain, torn or not.
+wire [31:0] cont3_key_s;
+wire [31:0] cont3_joy_s;
+wire [15:0] cont3_trig_s;
+synch_3 #(.WIDTH(32)) cont3_key_sync  (cont3_key,  cont3_key_s,  clk_sys);
+synch_3 #(.WIDTH(32)) cont3_joy_sync  (cont3_joy,  cont3_joy_s,  clk_sys);
+synch_3 #(.WIDTH(16)) cont3_trig_sync (cont3_trig, cont3_trig_s, clk_sys);
+
 wire [10:0] ps2_key_usb;
 
 usb_keyboard usb_kbd
 (
-	.clk        ( clk_sys     ),
-	.clk_sync   ( clk_sys     ),
-	.reset      ( reset       ),
-	.cont3_key  ( cont3_key   ),
-	.cont3_joy  ( cont3_joy   ),
-	.cont3_trig ( cont3_trig  ),
-	.ps2_key    ( ps2_key_usb )
+	.clk        ( clk_sys      ),
+	.clk_sync   ( clk_sys      ),
+	.reset      ( reset        ),
+	.cont3_key  ( cont3_key_s  ),
+	.cont3_joy  ( cont3_joy_s  ),
+	.cont3_trig ( cont3_trig_s ),
+	.ps2_key    ( ps2_key_usb  )
 );
 
 // usb_keyboard's ps2_key[10] ("strobe") is a PULSE from key_mgr: it goes
@@ -1956,16 +1970,30 @@ usb_keyboard usb_kbd
 // That's what produced "sticky" keys - stuck until the next real event
 // gave keyboard.sv a coherent sample again.
 //
-// Fix: only look at usb_kbd's strobe rising edge (the one unambiguous
-// "a real event happened" signal) and latch pressed/code + flip our own
-// toggle bit right then, instead of registering the live combinational
-// bus every cycle.
-reg        ps2_strobe_d = 0;
-reg        ps2_toggle   = 0;
+// Fix (v1, superseded below): only look at usb_kbd's strobe rising edge
+// and latch pressed/code + flip our own toggle bit right then, instead of
+// registering the live combinational bus every cycle.
+//
+// That alone isn't sufficient: when two keys change in the SAME arbiter
+// pass (e.g. releasing two held keys at once - normal for game controls),
+// both land on the arbiter's 1-cycle "empty slot" fast path back-to-back,
+// with no idle cycle between them, so strobe never drops back to 0
+// between the two events - there's no rising edge to catch the second
+// one, and it's lost exactly like the original bug. Confirmed via
+// simulation (src/fpga/core/usbkbd/tb_multikey*.sv): whichever key
+// occupied the second populated HID scancode slot never released.
+//
+// Fix: trigger on strobe being high AND the (pressed,code) content
+// having changed since our last latch, instead of requiring a 0-then-1
+// transition. This catches every distinct event even when strobe stays
+// asserted across several of them, since consecutive real events always
+// carry different (pressed,code) content (different key and/or
+// make-vs-break) - it just can't repeat the exact same content twice in
+// a row from a live source.
+reg        ps2_toggle      = 0;
 reg  [9:0] ps2_key_latched = 0;
 always @(posedge clk_sys) begin
-	ps2_strobe_d <= ps2_key_usb[10];
-	if (ps2_key_usb[10] & ~ps2_strobe_d) begin
+	if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_latched)) begin
 		ps2_toggle      <= ~ps2_toggle;
 		ps2_key_latched <= ps2_key_usb[9:0];
 	end
