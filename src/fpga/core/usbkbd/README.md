@@ -50,36 +50,39 @@ gap between them, so strobe never drops back to 0 between the two events -
 an edge-only detector misses the second one. Confirmed via
 `tb_multikey.sv`.
 
-## Known limitation: releasing one of several held keys can drop another
+## Fixed: releasing one of several held keys could drop another
 
 If a HID host compacts the scancode slot array when one of several held
 keys is released - the still-held key(s) shift to a lower slot index -
 the slot it vacates still remembers its old occupant and emits a stale
 break for that code on this same scan pass. Since `keyboard.sv`'s `keys[][]`
 matrix is indexed by PS/2 code, not by which HID slot reported it, that
-stale break can race with and overwrite the still-held key's press state
-if it arrives after the new slot's press event. Confirmed via simulation
-(see the compaction scenario removed from `tb_multikey.sv`, still visible
-in git history) - a key held alongside another key that gets released can
-drop even though it's still physically held.
+stale break could race with and overwrite the still-held key's press state
+if it arrived after the new slot's press event. Confirmed on real hardware
+(two directional keys held - release one, the other would drop) and via
+simulation (`tb_compaction_fix.sv`).
 
-Not yet fixed: doing so cleanly needs either restructuring `key_mgr`/
-`key_arbiter` to track by code instead of by slot index, or a
-cross-slot arbitration rule in `core_top.sv`'s glue logic to make a
-same-pass press always win over a same-pass release for the same code.
-Whether this actually matters depends on whether the real Pocket firmware
-compacts slots on release, which isn't confirmed - test on real hardware
-(hold two keys, release one, check the other doesn't stick) before
-investing in the fix.
+Fixed in `core_top.sv`, not in these vendored files: a "live" snapshot of
+currently-held PS/2 codes is independently re-translated straight from
+`usb_kbd`'s own `usb_kb_mod`/`usb_kb_sc1..6` outputs (which it already
+computes internally for its slot-tracking path) via one extra `hid2ps2_mod`
+and six extra `hid2ps2_key` instances - bypassing `kb_fifo`/`key_arbiter`/
+`key_mgr` entirely, so it can't inherit their slot-indexing problem. A
+release event is only let through if its code is *not* found anywhere in
+that live snapshot; if it is, the release is stale (the key just moved
+slots) and gets suppressed. Presses always pass through unchanged, so
+this can only ever hold a release back, never fabricate or drop a press.
 
 ## Running the testbenches
 
 `tb_keyboard.sv` (single key, incl. a long hold), `tb_multikey.sv` (two keys
-at once) and `tb_modifier.sv` (Shift+key combos, both press orders) are
-self-contained Icarus Verilog testbenches instantiating this bridge exactly
-as `core_top.sv` wires it, to verify press/hold/release behaviour without
-real hardware. All three pass as of the fixes documented above. They can't
-be run directly against these files with Icarus (`brew install icarus-verilog`)
+at once), `tb_modifier.sv` (Shift+key combos, both press orders) and
+`tb_compaction_fix.sv` (the slot-compaction scenario above, and a sanity
+check that the fix doesn't suppress genuine releases) are self-contained
+Icarus Verilog testbenches instantiating this bridge exactly as
+`core_top.sv` wires it, to verify press/hold/release behaviour without real
+hardware. All four pass as of the fixes documented above. They can't be
+run directly against these files with Icarus (`brew install icarus-verilog`)
 as-is: Icarus's SystemVerilog support has gaps that Quartus doesn't share
 (enum assignment needs an explicit cast, forward-referenced declarations
 need reordering, a `logic` port can't have both an initializer and a

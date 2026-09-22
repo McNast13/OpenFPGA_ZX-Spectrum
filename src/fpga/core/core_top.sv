@@ -1941,6 +1941,7 @@ synch_3 #(.WIDTH(32)) cont3_joy_sync  (cont3_joy,  cont3_joy_s,  clk_sys);
 synch_3 #(.WIDTH(16)) cont3_trig_sync (cont3_trig, cont3_trig_s, clk_sys);
 
 wire [10:0] ps2_key_usb;
+wire  [7:0] usb_kb_mod, usb_kb_sc1, usb_kb_sc2, usb_kb_sc3, usb_kb_sc4, usb_kb_sc5, usb_kb_sc6;
 
 usb_keyboard usb_kbd
 (
@@ -1950,8 +1951,51 @@ usb_keyboard usb_kbd
 	.cont3_key  ( cont3_key_s  ),
 	.cont3_joy  ( cont3_joy_s  ),
 	.cont3_trig ( cont3_trig_s ),
+	.usb_kb_mod ( usb_kb_mod   ),
+	.usb_kb_sc1 ( usb_kb_sc1   ),
+	.usb_kb_sc2 ( usb_kb_sc2   ),
+	.usb_kb_sc3 ( usb_kb_sc3   ),
+	.usb_kb_sc4 ( usb_kb_sc4   ),
+	.usb_kb_sc5 ( usb_kb_sc5   ),
+	.usb_kb_sc6 ( usb_kb_sc6   ),
 	.ps2_key    ( ps2_key_usb  )
 );
+
+// "Live" snapshot of currently-held PS/2 codes, independently re-translated
+// straight from the current raw HID report (usb_kbd's own usb_kb_* outputs,
+// which it already computes for its internal slot-tracking path) - used
+// below to suppress a stale release for a key that's still actually held,
+// just tracked under a different HID scancode slot than before. See the
+// "Known limitation" writeup in src/fpga/core/usbkbd/README.md this
+// supersedes: usb_keyboard's key_mgr/key_arbiter track state PER ARBITER
+// SLOT, so when a held key's slot changes (the HID host "compacts" the
+// scancode list when another held key releases), the vacated slot doesn't
+// know its old occupant just moved - it sees "my key is gone" and emits a
+// break for that code, which can arrive after the new slot's press and
+// wrongly overwrite keyboard.sv's (code-indexed, not slot-indexed) state
+// for a key that was never actually released. Confirmed on real hardware
+// with two directional keys (release one, the other drops) and via
+// simulation (src/fpga/core/usbkbd/tb_compaction_fix.sv).
+logic [71:0] live_mods;
+logic  [8:0] live_sc1, live_sc2, live_sc3, live_sc4, live_sc5, live_sc6;
+hid2ps2_mod u_live_mod (.clk(~clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
+hid2ps2_key u_live_sc1 (.clk(~clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
+hid2ps2_key u_live_sc2 (.clk(~clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
+hid2ps2_key u_live_sc3 (.clk(~clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
+hid2ps2_key u_live_sc4 (.clk(~clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
+hid2ps2_key u_live_sc5 (.clk(~clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
+hid2ps2_key u_live_sc6 (.clk(~clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
+
+function automatic logic ps2_code_is_live(input [8:0] code);
+	ps2_code_is_live =
+		(code != 9'h0) && (
+		(live_mods[71:63] == code) || (live_mods[62:54] == code) ||
+		(live_mods[53:45] == code) || (live_mods[44:36] == code) ||
+		(live_mods[35:27] == code) || (live_mods[26:18] == code) ||
+		(live_mods[17:9]  == code) || (live_mods[8:0]   == code) ||
+		(live_sc1 == code) || (live_sc2 == code) || (live_sc3 == code) ||
+		(live_sc4 == code) || (live_sc5 == code) || (live_sc6 == code));
+endfunction
 
 // usb_keyboard's ps2_key[10] ("strobe") is a PULSE from key_mgr: it goes
 // high for exactly one cycle on a make/break event and then back low on
@@ -1994,8 +2038,15 @@ reg        ps2_toggle      = 0;
 reg  [9:0] ps2_key_latched = 0;
 always @(posedge clk_sys) begin
 	if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_latched)) begin
-		ps2_toggle      <= ~ps2_toggle;
-		ps2_key_latched <= ps2_key_usb[9:0];
+		// Suppress a stale release (pressed=0) for a code that's still
+		// present in the live snapshot above - see the comment at
+		// ps2_code_is_live's declaration. Presses always pass through;
+		// this can only ever hold a release back, never fabricate or
+		// drop a press.
+		if (ps2_key_usb[9] || !ps2_code_is_live(ps2_key_usb[8:0])) begin
+			ps2_toggle      <= ~ps2_toggle;
+			ps2_key_latched <= ps2_key_usb[9:0];
+		end
 	end
 end
 wire [10:0] ps2_key = {ps2_toggle, ps2_key_latched};
