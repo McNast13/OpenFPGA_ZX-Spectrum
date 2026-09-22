@@ -1,143 +1,38 @@
 `timescale 1ns/1ps
 // Multi-key (simultaneous key hold) testbench - the actual game-controls
 // use case: multiple keys held at once, one released while others remain,
-// slot reassignment/compaction by the HID host as keys come and go.
+// and a HID host reordering/compacting its scancode slots as keys come and
+// go. That last scenario used to be a real bug class (see git history and
+// src/fpga/core/usbkbd/README.md) when this design tracked state per HID
+// slot; it cannot recur now - keyboard.sv re-derives the whole matrix from
+// all 6 slots every cycle, with no per-slot state to go stale - but the
+// "release one of two held keys, the other must stay pressed" checks are
+// kept here as a permanent regression guard.
 
 module tb_multikey;
 
     reg clk_sys = 0;
-    always #4.464 clk_sys = ~clk_sys; // 8.928ns period, matches clk_sys
-
-    reg clk_74a = 0;
-    always #6.734 clk_74a = ~clk_74a; // 13.468ns period, matches clk_74a
+    always #4.464 clk_sys = ~clk_sys;
 
     reg reset = 1;
-    reg [31:0] cont3_key  = 0;
-    reg [31:0] cont3_joy  = 0;
-    reg [15:0] cont3_trig = 0;
-
-    wire [31:0] cont3_key_s;
-    wire [31:0] cont3_joy_s;
-    wire [15:0] cont3_trig_s;
-    synch_3 #(.WIDTH(32)) cont3_key_sync  (cont3_key,  cont3_key_s,  clk_74a);
-    synch_3 #(.WIDTH(32)) cont3_joy_sync  (cont3_joy,  cont3_joy_s,  clk_74a);
-    synch_3 #(.WIDTH(16)) cont3_trig_sync (cont3_trig, cont3_trig_s, clk_74a);
-
+    reg [7:0] hid_mod = 0, hid_sc1 = 0, hid_sc2 = 0, hid_sc3 = 0, hid_sc4 = 0, hid_sc5 = 0, hid_sc6 = 0;
     reg [15:0] addr = 16'hFFFF;
     integer errors = 0;
-
-    wire [10:0] ps2_key_usb;
-    wire  [7:0] usb_kb_mod, usb_kb_sc1, usb_kb_sc2, usb_kb_sc3, usb_kb_sc4, usb_kb_sc5, usb_kb_sc6;
-    wire [63:0] usb_kb_hid;
-    usb_keyboard usb_kbd (
-        .clk(clk_74a), .clk_sync(clk_74a), .reset(reset),
-        .cont3_key(cont3_key_s), .cont3_joy(cont3_joy_s), .cont3_trig(cont3_trig_s),
-        .usb_kb_hid(usb_kb_hid), .usb_kb_mod(usb_kb_mod),
-        .usb_kb_sc1(usb_kb_sc1), .usb_kb_sc2(usb_kb_sc2), .usb_kb_sc3(usb_kb_sc3),
-        .usb_kb_sc4(usb_kb_sc4), .usb_kb_sc5(usb_kb_sc5), .usb_kb_sc6(usb_kb_sc6),
-        .ps2_key(ps2_key_usb)
-    );
-
-    logic [71:0] live_mods;
-    logic  [8:0] live_sc1, live_sc2, live_sc3, live_sc4, live_sc5, live_sc6;
-    hid2ps2_mod u_live_mod (.clk(clk_74a), .usb(usb_kb_mod), .ps2(live_mods));
-    hid2ps2_key u_live_sc1 (.clk(clk_74a), .usb(usb_kb_sc1), .ps2(live_sc1));
-    hid2ps2_key u_live_sc2 (.clk(clk_74a), .usb(usb_kb_sc2), .ps2(live_sc2));
-    hid2ps2_key u_live_sc3 (.clk(clk_74a), .usb(usb_kb_sc3), .ps2(live_sc3));
-    hid2ps2_key u_live_sc4 (.clk(clk_74a), .usb(usb_kb_sc4), .ps2(live_sc4));
-    hid2ps2_key u_live_sc5 (.clk(clk_74a), .usb(usb_kb_sc5), .ps2(live_sc5));
-    hid2ps2_key u_live_sc6 (.clk(clk_74a), .usb(usb_kb_sc6), .ps2(live_sc6));
-
-    function automatic logic code_is_live(input [8:0] code);
-        begin
-            code_is_live =
-                (code != 9'h0) && (
-                (live_mods[71:63] == code) || (live_mods[62:54] == code) ||
-                (live_mods[53:45] == code) || (live_mods[44:36] == code) ||
-                (live_mods[35:27] == code) || (live_mods[26:18] == code) ||
-                (live_mods[17:9]  == code) || (live_mods[8:0]   == code) ||
-                (live_sc1 == code) || (live_sc2 == code) || (live_sc3 == code) ||
-                (live_sc4 == code) || (live_sc5 == code) || (live_sc6 == code));
-        end
-    endfunction
-
-    reg  [9:0] ps2_key_usb_prev_74a = 0;
-    reg        ps2_toggle_74a       = 0;
-    reg  [9:0] ps2_key_latched_74a  = 0;
-    reg  [9:0] ps2_q0 = 0, ps2_q1 = 0;
-    reg  [1:0] ps2_qcount   = 0;
-    reg        ps2_draining = 0;
-
-    wire ps2_ack_74a; // declared here for Icarus; driven further down by ps2_ack_cdc
-
-    wire ps2_new_event = ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev_74a) &&
-                         (ps2_key_usb[9] || !code_is_live(ps2_key_usb[8:0]));
-    wire ps2_ready      = (ps2_ack_74a == ps2_toggle_74a);
-    wire ps2_do_dequeue = !ps2_draining && ps2_ready && (ps2_qcount != 0);
-
-    always @(posedge clk_74a) begin
-        ps2_key_usb_prev_74a <= ps2_key_usb[9:0];
-
-        if (ps2_draining) begin
-            ps2_toggle_74a <= ~ps2_toggle_74a;
-            ps2_draining   <= 1'b0;
-        end else if (ps2_do_dequeue) begin
-            ps2_key_latched_74a <= ps2_q0;
-            ps2_draining        <= 1'b1;
-        end
-
-        case ({ps2_do_dequeue, ps2_new_event})
-            2'b01: begin
-                if (ps2_qcount == 0) ps2_q0 <= ps2_key_usb[9:0];
-                else                 ps2_q1 <= ps2_key_usb[9:0];
-                ps2_qcount <= ps2_qcount + 2'd1;
-            end
-            2'b10: begin
-                ps2_q0     <= ps2_q1;
-                ps2_qcount <= ps2_qcount - 2'd1;
-            end
-            2'b11: begin
-                if (ps2_qcount == 1) begin
-                    ps2_q0 <= ps2_key_usb[9:0];
-                end else begin
-                    ps2_q0 <= ps2_q1;
-                    ps2_q1 <= ps2_key_usb[9:0];
-                end
-            end
-            default: ;
-        endcase
-    end
-
-    wire ps2_toggle_sync, ps2_toggle_rise, ps2_toggle_fall;
-    synch_3 #(.WIDTH(1)) ps2_toggle_cdc (ps2_toggle_74a, ps2_toggle_sync, clk_sys, ps2_toggle_rise, ps2_toggle_fall);
-
-    synch_3 #(.WIDTH(1)) ps2_ack_cdc (ps2_toggle_sync, ps2_ack_74a, clk_74a);
-
-    reg        ps2_toggle      = 0;
-    reg  [9:0] ps2_key_latched = 0;
-    always @(posedge clk_sys) begin
-        if (ps2_toggle_rise || ps2_toggle_fall) begin
-            ps2_toggle      <= ~ps2_toggle;
-            ps2_key_latched <= ps2_key_latched_74a;
-        end
-    end
-    wire [10:0] ps2_key = {ps2_toggle, ps2_key_latched};
 
     wire [4:0] hw_key_data;
     wire [11:1] Fn_hw;
     wire  [2:0] mod_hw;
     keyboard kbd (
-        .reset(reset), .clk_sys(clk_sys), .ps2_key(ps2_key),
-        .recreated_zx(1'b0), .ghosting(1'b0), .addr(addr),
-        .key_data(hw_key_data), .Fn(Fn_hw), .mod(mod_hw)
+        .reset(reset), .clk_sys(clk_sys),
+        .hid_mod(hid_mod), .hid_sc1(hid_sc1), .hid_sc2(hid_sc2), .hid_sc3(hid_sc3),
+        .hid_sc4(hid_sc4), .hid_sc5(hid_sc5), .hid_sc6(hid_sc6),
+        .recreated_zx(1'b0), .ghosting(1'b0),
+        .addr(addr), .key_data(hw_key_data), .Fn(Fn_hw), .mod(mod_hw)
     );
 
     // USB 0x04='a'->row1 col0, 0x1A='w'->row2 col1, 0x16='s'->row1 col1, 0x07='d'->row1 col2
     task set_keys(input [7:0] sc1, input [7:0] sc2);
-        begin
-            cont3_key = {4'h4, 28'h0};
-            cont3_joy = {sc1, sc2, 8'h00, 8'h00};
-        end
+        begin hid_sc1 = sc1; hid_sc2 = sc2; hid_sc3 = 0; hid_sc4 = 0; hid_sc5 = 0; hid_sc6 = 0; hid_mod = 0; end
     endtask
 
     task select_row(input integer row);
@@ -162,45 +57,45 @@ module tb_multikey;
 
         // Hold 'a' (movement) + 'd' (movement) simultaneously - diagonal-style combo
         set_keys(8'h04, 8'h07); // a in slot1, d in slot2
-        repeat (600) @(posedge clk_sys);
+        repeat (20) @(posedge clk_sys);
         select_row(1); check(hw_key_data[0] === 1'b0, "combo: 'a' pressed (slot1)");
         select_row(1); check(hw_key_data[2] === 1'b0, "combo: 'd' pressed (slot2)");
 
         // Hold both for a while (simulate sustained diagonal movement)
-        repeat (30000) @(posedge clk_sys);
+        repeat (5000) @(posedge clk_sys);
         select_row(1); check(hw_key_data[0] === 1'b0, "combo hold: 'a' still pressed");
         select_row(1); check(hw_key_data[2] === 1'b0, "combo hold: 'd' still pressed");
 
-        // Release 'a' only - HID host compacts: 'd' shifts from slot2 to slot1
+        // Release 'a' only - a HID host may compact: 'd' shifts from slot2 to slot1
         set_keys(8'h07, 8'h00); // d moves to slot1, slot2 now empty
-        repeat (600) @(posedge clk_sys);
-        select_row(1); check(hw_key_data[0] === 1'b1, "release 'a' (compaction): 'a' bit released");
-        select_row(1); check(hw_key_data[2] === 1'b0, "release 'a' (compaction): 'd' bit STILL pressed after shifting slots");
+        repeat (20) @(posedge clk_sys);
+        select_row(1); check(hw_key_data[0] === 1'b1, "release 'a' (slot reorder): 'a' bit released");
+        select_row(1); check(hw_key_data[2] === 1'b0, "release 'a' (slot reorder): 'd' bit STILL pressed after moving slots");
 
         // Now release 'd' too
         set_keys(8'h00, 8'h00);
-        repeat (600) @(posedge clk_sys);
+        repeat (20) @(posedge clk_sys);
         select_row(1); check(hw_key_data[2] === 1'b1, "release 'd': released cleanly");
 
         // Rapid combo: press w+a together, hold, release both together, then press s+d
         set_keys(8'h1A, 8'h04); // w slot1, a slot2
-        repeat (600) @(posedge clk_sys);
+        repeat (20) @(posedge clk_sys);
         select_row(2); check(hw_key_data[1] === 1'b0, "w+a: 'w' pressed (row2 col1)");
         select_row(1); check(hw_key_data[0] === 1'b0, "w+a: 'a' pressed (row1 col0)");
-        repeat (20000) @(posedge clk_sys);
+        repeat (5000) @(posedge clk_sys);
         select_row(2); check(hw_key_data[1] === 1'b0, "w+a hold: 'w' still pressed");
         select_row(1); check(hw_key_data[0] === 1'b0, "w+a hold: 'a' still pressed");
         set_keys(8'h00, 8'h00);
-        repeat (600) @(posedge clk_sys);
+        repeat (20) @(posedge clk_sys);
         select_row(2); check(hw_key_data[1] === 1'b1, "w+a release: 'w' released");
         select_row(1); check(hw_key_data[0] === 1'b1, "w+a release: 'a' released");
 
         set_keys(8'h16, 8'h07); // s slot1, d slot2
-        repeat (600) @(posedge clk_sys);
+        repeat (20) @(posedge clk_sys);
         select_row(1); check(hw_key_data[1] === 1'b0, "s+d: 's' pressed (row1 col1)");
         select_row(1); check(hw_key_data[2] === 1'b0, "s+d: 'd' pressed (row1 col2)");
         set_keys(8'h00, 8'h00);
-        repeat (600) @(posedge clk_sys);
+        repeat (20) @(posedge clk_sys);
         select_row(1); check(hw_key_data[1] === 1'b1, "s+d release: 's' released");
         select_row(1); check(hw_key_data[2] === 1'b1, "s+d release: 'd' released");
 

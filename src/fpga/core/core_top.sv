@@ -1924,47 +1924,32 @@ end
 
 ////////////////////   USB Keyboard   ////////////////////
 // Converts the Pocket's docked-USB-keyboard controller-bus report (cont3_*)
-// into a MiSTer-style ps2_key strobe, then decodes that into the Spectrum
-// keyboard matrix with the original MiSTer keyboard.sv. See src/fpga/core/usbkbd/.
-//
-// EVERYTHING from cont3_* through to a clean {toggle,pressed,code} runs on
-// clk_74a, not clk_sys, and only crosses into clk_sys at the very end. Why:
-// this whole chain - kb_fifo, key_arbiter, key_mgr's 16-way per-slot state
-// machine, plus the "live snapshot" re-translation added for the
-// compaction fix below - kept costing more of clk_sys's setup-timing
-// budget than a series of individually-placed pipeline registers could
-// reliably buy back (one such register even made the CI timing report
-// *worse*, not better, once this design's 92%-ALM-full placement pressure
-// got involved - registers aren't free in a chip this full). None of this
-// logic needs to run anywhere near clk_sys speed in the first place -
-// keyboard events are human-speed, not MHz-speed - so instead of chasing
-// individual paths, give the whole thing a clock with a lot more slack:
-// clk_74a (13.468ns period vs clk_sys's 8.928ns, already a real, properly
-// constrained, independent clock in this design - core_constraints.sdc
-// already declares it and clk_sys asynchronous to each other via
-// set_clock_groups, so this needs no new SDC work, just correct
-// synchronizers at the boundary).
+// directly into the Spectrum keyboard matrix - no PS/2 intermediate step,
+// no MiSTer-style ps2_key toggle/strobe convention, no per-HID-slot state
+// tracking. See src/fpga/core/keyboard.sv and src/fpga/core/usbkbd/README.md.
 //
 // cont3_key/cont3_joy/cont3_trig are APF bridge inputs, not natively in
-// clk_74a's domain - cont1_key gets the equivalent treatment (via synch_3)
-// before use elsewhere in this file. Without it, a bus sampled
-// mid-transition can tear (different bits caught on different sides of a
-// change), which apf2hid's own pipeline downstream doesn't fix since it
-// just re-registers whatever value it was handed, torn or not.
+// clk_sys's domain - cont1_key gets the equivalent treatment (via synch_3)
+// elsewhere in this file. Without it, a bus sampled mid-transition can
+// tear (different bits caught on different sides of a change), which
+// apf2hid's own pipeline downstream doesn't fix since it just re-registers
+// whatever value it was handed, torn or not. Unlike the old PS/2 bridge's
+// edge-triggered events, keyboard.sv's decode re-runs from this snapshot
+// every clk_sys cycle, so there's no discrete event that a mid-transition
+// sample could corrupt or lose - a torn sample here just self-corrects on
+// the very next cycle once the source has settled.
 wire [31:0] cont3_key_s;
 wire [31:0] cont3_joy_s;
 wire [15:0] cont3_trig_s;
-synch_3 #(.WIDTH(32)) cont3_key_sync  (cont3_key,  cont3_key_s,  clk_74a);
-synch_3 #(.WIDTH(32)) cont3_joy_sync  (cont3_joy,  cont3_joy_s,  clk_74a);
-synch_3 #(.WIDTH(16)) cont3_trig_sync (cont3_trig, cont3_trig_s, clk_74a);
+synch_3 #(.WIDTH(32)) cont3_key_sync  (cont3_key,  cont3_key_s,  clk_sys);
+synch_3 #(.WIDTH(32)) cont3_joy_sync  (cont3_joy,  cont3_joy_s,  clk_sys);
+synch_3 #(.WIDTH(16)) cont3_trig_sync (cont3_trig, cont3_trig_s, clk_sys);
 
-wire [10:0] ps2_key_usb;
 wire  [7:0] usb_kb_mod, usb_kb_sc1, usb_kb_sc2, usb_kb_sc3, usb_kb_sc4, usb_kb_sc5, usb_kb_sc6;
 
-usb_keyboard usb_kbd
+apf2hid u_apf2hid
 (
-	.clk        ( clk_74a      ),
-	.clk_sync   ( clk_74a      ),
+	.clk        ( clk_sys      ),
 	.reset      ( reset        ),
 	.cont3_key  ( cont3_key_s  ),
 	.cont3_joy  ( cont3_joy_s  ),
@@ -1975,200 +1960,8 @@ usb_keyboard usb_kbd
 	.usb_kb_sc3 ( usb_kb_sc3   ),
 	.usb_kb_sc4 ( usb_kb_sc4   ),
 	.usb_kb_sc5 ( usb_kb_sc5   ),
-	.usb_kb_sc6 ( usb_kb_sc6   ),
-	.ps2_key    ( ps2_key_usb  )
+	.usb_kb_sc6 ( usb_kb_sc6   )
 );
-
-// "Live" snapshot of currently-held PS/2 codes, independently re-translated
-// straight from the current raw HID report (usb_kbd's own usb_kb_* outputs,
-// which it already computes for its internal slot-tracking path) - used
-// below to suppress a stale release for a key that's still actually held,
-// just tracked under a different HID scancode slot than before. See the
-// "Fixed" writeup in src/fpga/core/usbkbd/README.md this implements:
-// usb_keyboard's key_mgr/key_arbiter track state PER ARBITER SLOT, so when
-// a held key's slot changes (the HID host "compacts" the scancode list
-// when another held key releases), the vacated slot doesn't know its old
-// occupant just moved - it sees "my key is gone" and emits a break for
-// that code, which can arrive after the new slot's press and wrongly
-// overwrite keyboard.sv's (code-indexed, not slot-indexed) state for a key
-// that was never actually released. Confirmed on real hardware with two
-// directional keys (release one, the other drops) and via simulation
-// (src/fpga/core/usbkbd/tb_compaction_fix.sv). Stays on clk_74a, same
-// domain as ps2_key_usb above - both need to agree on the SAME instant's
-// HID report, so this can't be split across a clock boundary from that.
-logic [71:0] live_mods;
-logic  [8:0] live_sc1, live_sc2, live_sc3, live_sc4, live_sc5, live_sc6;
-// Rising-edge clocked, not falling - see the comment on the equivalent
-// instances inside usb_keyboard.sv for why: negedge launch only gives a
-// half clock period of margin into the next posedge-clocked stage.
-hid2ps2_mod u_live_mod (.clk(clk_74a), .usb(usb_kb_mod), .ps2(live_mods));
-hid2ps2_key u_live_sc1 (.clk(clk_74a), .usb(usb_kb_sc1), .ps2(live_sc1));
-hid2ps2_key u_live_sc2 (.clk(clk_74a), .usb(usb_kb_sc2), .ps2(live_sc2));
-hid2ps2_key u_live_sc3 (.clk(clk_74a), .usb(usb_kb_sc3), .ps2(live_sc3));
-hid2ps2_key u_live_sc4 (.clk(clk_74a), .usb(usb_kb_sc4), .ps2(live_sc4));
-hid2ps2_key u_live_sc5 (.clk(clk_74a), .usb(usb_kb_sc5), .ps2(live_sc5));
-hid2ps2_key u_live_sc6 (.clk(clk_74a), .usb(usb_kb_sc6), .ps2(live_sc6));
-
-function automatic logic ps2_code_is_live(input [8:0] code);
-	ps2_code_is_live =
-		(code != 9'h0) && (
-		(live_mods[71:63] == code) || (live_mods[62:54] == code) ||
-		(live_mods[53:45] == code) || (live_mods[44:36] == code) ||
-		(live_mods[35:27] == code) || (live_mods[26:18] == code) ||
-		(live_mods[17:9]  == code) || (live_mods[8:0]   == code) ||
-		(live_sc1 == code) || (live_sc2 == code) || (live_sc3 == code) ||
-		(live_sc4 == code) || (live_sc5 == code) || (live_sc6 == code));
-endfunction
-
-// usb_keyboard's ps2_key[10] ("strobe") is a PULSE from key_mgr: it goes
-// high for exactly one cycle on a make/break event and then back low on
-// its own (key_mgr.sv key_strobe_array, PRESS/HOLD_RELEASE states) - it
-// does not stay at a new level the way a real toggle bit would. pressed/
-// code are also purely combinational, continuously reflecting whichever
-// of the 14 HID slots the round-robin arbiter currently happens to be
-// looking at, not just the slot that just changed. keyboard.sv instead
-// expects the MiSTer ps2_key convention: bit 10 is a TOGGLE that flips
-// once per real event and holds, with pressed/code valid and stable at
-// that moment.
-//
-// This runs entirely on clk_74a (same domain as ps2_key_usb above - a
-// suppression decision needs to see a coherent, same-instant live
-// snapshot, not one racing across a clock boundary). ps2_key_usb_prev
-// tracks usb_kbd's raw output from the immediately preceding clk_74a
-// cycle, updated unconditionally every cycle - never gated by strobe or
-// by whether an event gets forwarded. Comparing against anything else is
-// a trap - see the two failed attempts this replaced, kept here because
-// the reasoning generalizes to any similar filtering-in-a-stream problem:
-// comparing against the OUTPUT latch instead leaves it holding stale
-// content after a suppressed release, so a later genuine event whose
-// content happens to equal that stale value gets silently dropped too;
-// comparing against a separate "last distinct content seen" register that
-// *does* update on suppression is just as broken, since a release's
-// content only ever depends on (pressed=0, code), so a suppressed release
-// and that same key's real final release later carry IDENTICAL content
-// and that register stays permanently "poisoned". Comparing against the
-// raw previous-cycle value sidesteps both: it drifts through whatever the
-// round-robin arbiter is combinationally showing on intervening cycles
-// (typically 0 while scanning other, empty slots) regardless of what got
-// forwarded, so it can't get stuck on one value.
-// Stage each forwarded event's content one clk_74a cycle before flipping
-// the toggle bit for it, rather than both in the same cycle - required
-// for a safe multi-bit clock-domain crossing below. ps2_key_latched_74a
-// is a single atomically-updated register, so it never carries a "torn"
-// value on ITS OWN clock - but if clk_sys's synchronizer happened to
-// sample it right as it changed, per-bit metastability resolution in
-// that synchronizer isn't guaranteed to agree bit-to-bit. Only
-// synchronizing the single toggle bit is safe that way (1 bit can't
-// tear); giving the content a full clk_74a cycle of head start before
-// the toggle (which clk_sys actually watches) means it's long since
-// settled by the time any clk_sys edge could be sampling it.
-//
-// A first version used a single "pending toggle" flag instead of the
-// 2-entry queue below, on an if/pending-flip else/detect-new-event
-// structure - which meant a second real event arriving on the exact
-// cycle the first one's toggle was flipping fell into the "else" that
-// cycle and got silently dropped, since ps2_key_usb_prev_74a (which
-// decides "is this new?") updates every cycle regardless, so if that
-// event's value didn't persist into the following cycle it never got
-// re-detected. Two events landing back-to-back like that is exactly
-// the release-two-keys-at-once / direction-change pattern this whole
-// bridge has to handle, and reproduced as real O+P/compaction test
-// failures in tb_compaction_fix.sv once clk_74a's slower pace made the
-// window wide enough to actually hit in simulation. A depth-2 queue
-// (this design has never been observed needing more than 2 - a single
-// HID-report change realistically only ever produces a couple of
-// distinct slot transitions) fixes it: every qualifying event gets
-// enqueued unconditionally, independent of whatever the drain side is
-// doing that same cycle, and the drain side spends one cycle latching
-// content then one cycle flipping the toggle per queued entry,
-// preserving the same content-then-toggle staging for every entry even
-// when draining a 2-deep backlog rather than just the first.
-reg  [9:0] ps2_key_usb_prev_74a = 0;
-reg        ps2_toggle_74a       = 0;
-reg  [9:0] ps2_key_latched_74a  = 0;
-reg  [9:0] ps2_q0 = 0, ps2_q1 = 0;
-reg  [1:0] ps2_qcount   = 0; // 0, 1 or 2 entries queued
-reg        ps2_draining = 0; // content already latched, flip toggle next cycle
-
-wire ps2_new_event = ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev_74a) &&
-                     (ps2_key_usb[9] || !ps2_code_is_live(ps2_key_usb[8:0]));
-
-// Round-trip handshake: ps2_ack_74a is ps2_toggle_74a synchronized into
-// clk_sys and straight back into clk_74a. While it still shows the
-// PREVIOUS toggle value, clk_sys hasn't caught up to the last flip yet,
-// so draining must stall rather than flip again. Without this, back-to-
-// back queue drains (2 entries, 1 clk_74a cycle apart) produced a toggle
-// pulse only ~27ns wide - shorter than clk_sys's own 4-stage synch_3
-// detection latency at this clock's rate, so the synchronizer merged the
-// two transitions into one and only ever reported the LATER event's
-// content, silently losing the earlier one. Confirmed via
-// tb_debug_release_o.sv: O's release toggle flip (0->1) was never seen
-// as a separate rise/fall on the clk_sys side at all - only P's
-// following press (1->0, ~27ns later) was, carrying P's content forward
-// while O's release vanished.
-wire ps2_ready       = (ps2_ack_74a == ps2_toggle_74a);
-wire ps2_do_dequeue  = !ps2_draining && ps2_ready && (ps2_qcount != 0);
-
-always @(posedge clk_74a) begin
-	ps2_key_usb_prev_74a <= ps2_key_usb[9:0];
-
-	if (ps2_draining) begin
-		ps2_toggle_74a <= ~ps2_toggle_74a;
-		ps2_draining   <= 1'b0;
-	end else if (ps2_do_dequeue) begin
-		ps2_key_latched_74a <= ps2_q0;
-		ps2_draining        <= 1'b1;
-	end
-
-	// Queue bookkeeping combined into one case so there's only ever one
-	// driver for ps2_q0/ps2_q1/ps2_qcount, regardless of which
-	// combination of enqueue/dequeue happens this cycle.
-	case ({ps2_do_dequeue, ps2_new_event})
-		2'b01: begin // enqueue only
-			if (ps2_qcount == 0) ps2_q0 <= ps2_key_usb[9:0];
-			else                 ps2_q1 <= ps2_key_usb[9:0];
-			ps2_qcount <= ps2_qcount + 2'd1;
-		end
-		2'b10: begin // dequeue only
-			ps2_q0     <= ps2_q1;
-			ps2_qcount <= ps2_qcount - 2'd1;
-		end
-		2'b11: begin // both: net queue depth unchanged
-			if (ps2_qcount == 1) begin
-				ps2_q0 <= ps2_key_usb[9:0]; // queue becomes just the new event
-			end else begin // ps2_qcount == 2
-				ps2_q0 <= ps2_q1;
-				ps2_q1 <= ps2_key_usb[9:0];
-			end
-		end
-		default: ; // 2'b00: nothing to do
-	endcase
-end
-
-// Cross into clk_sys: synch_3's WIDTH=1 case gives edge-detected rise/fall
-// pulses for free, which is exactly "a real event arrived" in the clk_sys
-// domain - and by the time either fires, ps2_key_latched_74a has been
-// stable in clk_74a for at least one full clk_74a period (>1 clk_sys
-// period) before ps2_toggle_74a even started this same synchronizer
-// chain, so sampling it here is safe despite it not having its own
-// dedicated synchronizer.
-wire ps2_toggle_sync, ps2_toggle_rise, ps2_toggle_fall;
-synch_3 #(.WIDTH(1)) ps2_toggle_cdc (ps2_toggle_74a, ps2_toggle_sync, clk_sys, ps2_toggle_rise, ps2_toggle_fall);
-
-// Round-trip echo of ps2_toggle_sync back into clk_74a - see ps2_ready's
-// declaration above, next to the drain logic that uses it.
-wire ps2_ack_74a;
-synch_3 #(.WIDTH(1)) ps2_ack_cdc (ps2_toggle_sync, ps2_ack_74a, clk_74a);
-
-reg        ps2_toggle      = 0;
-reg  [9:0] ps2_key_latched = 0;
-always @(posedge clk_sys) begin
-	if (ps2_toggle_rise || ps2_toggle_fall) begin
-		ps2_toggle      <= ~ps2_toggle;
-		ps2_key_latched <= ps2_key_latched_74a;
-	end
-end
-wire [10:0] ps2_key = {ps2_toggle, ps2_key_latched};
 
 wire       recreated_zx = 1'b0; // alternate non-QWERTY "Recreated ZX Spectrum" mapping - not exposed in the Pocket menu yet
 wire       ghosting     = 1'b0; // emulate real keyboard-matrix ghosting - not exposed in the Pocket menu yet
@@ -2178,7 +1971,13 @@ keyboard kbd
 (
 	.reset       ( reset        ),
 	.clk_sys     ( clk_sys      ),
-	.ps2_key     ( ps2_key      ),
+	.hid_mod     ( usb_kb_mod   ),
+	.hid_sc1     ( usb_kb_sc1   ),
+	.hid_sc2     ( usb_kb_sc2   ),
+	.hid_sc3     ( usb_kb_sc3   ),
+	.hid_sc4     ( usb_kb_sc4   ),
+	.hid_sc5     ( usb_kb_sc5   ),
+	.hid_sc6     ( usb_kb_sc6   ),
 	.recreated_zx( recreated_zx ),
 	.ghosting    ( ghosting     ),
 	.addr        ( addr         ),

@@ -822,12 +822,6 @@ set_global_assignment -name VERILOG_FILE core/divmmc.v
 set_global_assignment -name SYSTEMVERILOG_FILE core/sync_fifo.sv
 set_global_assignment -name SYSTEMVERILOG_FILE core/keyboard.sv
 set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/apf2hid.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/hid2ps2_key.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/hid2ps2_mod.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/kb_fifo.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/key_arbiter.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/key_mgr.sv
-set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/usb_keyboard.sv
 set_global_assignment -name QIP_FILE core/audio.qip
 set_global_assignment -name QIP_FILE core/mf_audio_pll.qip
 set_global_assignment -name SYSTEMVERILOG_FILE core/sound_i2s.sv
