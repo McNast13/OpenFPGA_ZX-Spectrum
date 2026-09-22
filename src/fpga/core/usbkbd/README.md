@@ -17,6 +17,28 @@ Copyright (c) 2023, Jacob Boline <mail@jboline.me>
 `key_ctl.sv` from the upstream directory was not vendored here as it is not
 used by `usb_keyboard.sv`.
 
+## Local modification: `hid2ps2_key`/`hid2ps2_mod` clocked on the rising edge
+
+Upstream clocks all seven ROM-lookup instances in `usb_keyboard.sv` (six
+`hid2ps2_key` + one `hid2ps2_mod`, and the equivalent "live snapshot"
+instances added in `core_top.sv` for the compaction fix below) on the
+*falling* edge of `clk`, while every other clock in this design - including
+the posedge-clocked stage that reads their output (`kb_fifo`) - is on the
+rising edge. That gives a negedge-launched signal only a HALF clock period
+to reach the next posedge before it's captured, not a full one. CI's
+timing report named exactly this ("Launch Clock ... INVERTED" on a
+`hid2ps2_key` instance) as the worst offender after the `ps2_key` pipeline-
+register fix below, and it was left unresolved at the time pending
+confirmation it caused a real symptom. It did: a hardware report of keys
+sticking after sustained rapid play (figure-8 movement + occasional
+punches in 128K BASIC and in-game), recoverable exactly once by pressing
+an unrelated modifier key before re-sticking - the signature of occasional
+marginal-timing metastability, not a logic bug (a logic bug wouldn't be
+"fixed" by an unrelated keypress, or need sustained activity to first
+appear). Changed all seven instances (both here and in `core_top.sv`) to
+the rising edge, matching everything downstream, for a full clock period
+of margin instead of half.
+
 ## Local modification: `kb_fifo.sv`'s key-repeat controller is disabled
 
 Everything is otherwise unmodified from upstream. `kb_fifo.sv`'s "Key Repeat

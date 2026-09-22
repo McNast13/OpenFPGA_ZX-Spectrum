@@ -1978,13 +1978,16 @@ usb_keyboard usb_kbd
 // simulation (src/fpga/core/usbkbd/tb_compaction_fix.sv).
 logic [71:0] live_mods;
 logic  [8:0] live_sc1, live_sc2, live_sc3, live_sc4, live_sc5, live_sc6;
-hid2ps2_mod u_live_mod (.clk(~clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
-hid2ps2_key u_live_sc1 (.clk(~clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
-hid2ps2_key u_live_sc2 (.clk(~clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
-hid2ps2_key u_live_sc3 (.clk(~clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
-hid2ps2_key u_live_sc4 (.clk(~clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
-hid2ps2_key u_live_sc5 (.clk(~clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
-hid2ps2_key u_live_sc6 (.clk(~clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
+// Rising-edge clocked, not falling - see the comment on the equivalent
+// instances inside usb_keyboard.sv for why: negedge launch only gives a
+// half clock period of margin into the next posedge-clocked stage.
+hid2ps2_mod u_live_mod (.clk(clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
+hid2ps2_key u_live_sc1 (.clk(clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
+hid2ps2_key u_live_sc2 (.clk(clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
+hid2ps2_key u_live_sc3 (.clk(clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
+hid2ps2_key u_live_sc4 (.clk(clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
+hid2ps2_key u_live_sc5 (.clk(clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
+hid2ps2_key u_live_sc6 (.clk(clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
 
 function automatic logic ps2_code_is_live(input [8:0] code);
 	ps2_code_is_live =

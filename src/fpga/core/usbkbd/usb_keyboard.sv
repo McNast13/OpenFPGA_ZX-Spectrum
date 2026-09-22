@@ -80,13 +80,27 @@ module usb_keyboard
     logic [53:0] ps2_keys;
     logic [71:0] ps2_mods;
 
-    hid2ps2_mod u_key_mod (.clk(~clk), .usb(usb_kb_mod), .ps2(ps2_mods));
-    hid2ps2_key u_key_sc1 (.clk(~clk), .usb(usb_kb_sc1), .ps2(ps2_keys[53:45]));
-    hid2ps2_key u_key_sc2 (.clk(~clk), .usb(usb_kb_sc2), .ps2(ps2_keys[44:36]));
-    hid2ps2_key u_key_sc3 (.clk(~clk), .usb(usb_kb_sc3), .ps2(ps2_keys[35:27]));
-    hid2ps2_key u_key_sc4 (.clk(~clk), .usb(usb_kb_sc4), .ps2(ps2_keys[26:18]));
-    hid2ps2_key u_key_sc5 (.clk(~clk), .usb(usb_kb_sc5), .ps2(ps2_keys[17:09]));
-    hid2ps2_key u_key_sc6 (.clk(~clk), .usb(usb_kb_sc6), .ps2(ps2_keys[08:00]));
+    // MODIFIED from upstream: clocked on the rising edge like everything
+    // else in this design, not the falling edge as upstream has it. The
+    // negedge launch only gives the ROM's registered output a HALF clock
+    // period (not a full one) to reach the next posedge-clocked stage
+    // (kb_fifo) before it's captured - CI's timing report named exactly
+    // this path (a hid2ps2_key instance, "Launch Clock ... INVERTED") as
+    // the worst offender after the ps2_key pipeline-register fix, and it
+    // was left unresolved pending confirmation it caused a real symptom.
+    // It did: a hardware report of keys sticking after sustained rapid
+    // play, recoverable exactly once by pressing an unrelated modifier
+    // key before re-sticking - the signature of occasional marginal-
+    // timing metastability, not a logic bug (a logic bug wouldn't be
+    // "fixed" by an unrelated keypress, or take sustained activity to
+    // first appear). Full-cycle timing removes the squeeze.
+    hid2ps2_mod u_key_mod (.clk(clk), .usb(usb_kb_mod), .ps2(ps2_mods));
+    hid2ps2_key u_key_sc1 (.clk(clk), .usb(usb_kb_sc1), .ps2(ps2_keys[53:45]));
+    hid2ps2_key u_key_sc2 (.clk(clk), .usb(usb_kb_sc2), .ps2(ps2_keys[44:36]));
+    hid2ps2_key u_key_sc3 (.clk(clk), .usb(usb_kb_sc3), .ps2(ps2_keys[35:27]));
+    hid2ps2_key u_key_sc4 (.clk(clk), .usb(usb_kb_sc4), .ps2(ps2_keys[26:18]));
+    hid2ps2_key u_key_sc5 (.clk(clk), .usb(usb_kb_sc5), .ps2(ps2_keys[17:09]));
+    hid2ps2_key u_key_sc6 (.clk(clk), .usb(usb_kb_sc6), .ps2(ps2_keys[08:00]));
 
     //! ------------------------------------------------------------------------
     //! PS/2 Keyboard FIFO
