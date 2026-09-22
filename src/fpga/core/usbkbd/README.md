@@ -76,13 +76,16 @@ this can only ever hold a release back, never fabricate or drop a press.
 ## Running the testbenches
 
 `tb_keyboard.sv` (single key, incl. a long hold), `tb_multikey.sv` (two keys
-at once), `tb_modifier.sv` (Shift+key combos, both press orders) and
-`tb_compaction_fix.sv` (the slot-compaction scenario above, and a sanity
-check that the fix doesn't suppress genuine releases) are self-contained
-Icarus Verilog testbenches instantiating this bridge exactly as
-`core_top.sv` wires it, to verify press/hold/release behaviour without real
-hardware. All four pass as of the fixes documented above. They can't be
-run directly against these files with Icarus (`brew install icarus-verilog`)
+at once), `tb_modifier.sv` (Shift+key combos, both press orders),
+`tb_compaction_fix.sv` (the slot-compaction scenario above, a sanity check
+that the fix doesn't suppress genuine releases, and the cascading-stuck
+regression from the "ps2_key_usb_prev" fix), `tb_mash.sv` (all 8 pairs of
+the QAOP+Space beat-em-up scheme, holding one key while rapidly mashing
+another) and `tb_mash3.sv` (three keys at once - hold two, mash a third)
+are self-contained Icarus Verilog testbenches instantiating this bridge
+exactly as `core_top.sv` wires it, to verify press/hold/release behaviour
+without real hardware. All six pass as of the fixes documented above. They
+can't be run directly against these files with Icarus (`brew install icarus-verilog`)
 as-is: Icarus's SystemVerilog support has gaps that Quartus doesn't share
 (enum assignment needs an explicit cast, forward-referenced declarations
 need reordering, a `logic` port can't have both an initializer and a
