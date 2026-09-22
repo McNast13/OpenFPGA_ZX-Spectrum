@@ -2034,10 +2034,37 @@ endfunction
 // carry different (pressed,code) content (different key and/or
 // make-vs-break) - it just can't repeat the exact same content twice in
 // a row from a live source.
-reg        ps2_toggle      = 0;
-reg  [9:0] ps2_key_latched = 0;
+// ps2_key_usb_prev tracks usb_kbd's raw output from the IMMEDIATELY
+// PRECEDING cycle, updated unconditionally every cycle - never gated by
+// strobe or by whether an event gets forwarded below. ps2_toggle/
+// ps2_key_latched are the forwarded OUTPUT and only change when an event
+// actually passes the suppression check.
+//
+// Comparing against anything else here is a trap: an earlier version
+// compared against ps2_key_latched (the output, only updated when
+// forwarding) and simply skipped updating it on a suppressed release,
+// leaving it holding stale content - a LATER genuine event whose content
+// happened to equal that stale value would then look unchanged and get
+// silently dropped too. A second attempt compared against a "last
+// distinct content seen" register that *did* update on suppression, which
+// is subtly just as broken: since a release's content only ever depends
+// on (pressed=0, code), a suppressed release and the SAME key's real,
+// final release later carry IDENTICAL content - so that register stays
+// "poisoned" and the real release never registers either. Comparing
+// against the raw previous-cycle value sidesteps both: it drifts through
+// whatever the round-robin arbiter is combinationally showing on
+// intervening cycles (typically 0 while scanning other, empty slots
+// between real events) regardless of what we chose to forward, so it
+// can't get stuck on one value. Found via a real hardware report ("long
+// press right then jump, long press left, then all key presses are
+// sticky") after the compaction fix below; both failure modes reproduced
+// and this fix validated in src/fpga/core/usbkbd/tb_compaction_fix.sv.
+reg  [9:0] ps2_key_usb_prev = 0;
+reg        ps2_toggle       = 0;
+reg  [9:0] ps2_key_latched  = 0;
 always @(posedge clk_sys) begin
-	if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_latched)) begin
+	ps2_key_usb_prev <= ps2_key_usb[9:0];
+	if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
 		// Suppress a stale release (pressed=0) for a code that's still
 		// present in the live snapshot above - see the comment at
 		// ps2_code_is_live's declaration. Presses always pass through;

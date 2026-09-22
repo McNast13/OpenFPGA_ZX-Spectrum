@@ -49,10 +49,28 @@ module tb_compaction_fix;
         end
     endfunction
 
-    reg        ps2_toggle      = 0;
-    reg  [9:0] ps2_key_latched = 0;
+    // ps2_key_usb_prev tracks the raw source value from the immediately
+    // preceding cycle, updated unconditionally every cycle. ps2_toggle/
+    // ps2_key_latched are the OUTPUT and only change when an event passes
+    // the suppression check below. Comparing against anything OTHER than
+    // the raw previous-cycle value is a trap: comparing against the
+    // output latch leaves it holding stale content after a suppressed
+    // release, so a later genuine event with the same content looks
+    // unchanged and gets dropped too; comparing against a "last distinct
+    // content seen" register that updates even when suppressed is just as
+    // broken, since a release's content depends only on (pressed=0,code)
+    // - a suppressed release and that same key's real final release later
+    // carry IDENTICAL content, so that register stays "poisoned" and the
+    // real release never registers either. The raw previous-cycle value
+    // avoids both: it drifts through whatever the arbiter combinationally
+    // shows on intervening cycles (0 while scanning other slots, normally)
+    // regardless of what we chose to forward, so it can't get stuck.
+    reg  [9:0] ps2_key_usb_prev = 0;
+    reg        ps2_toggle       = 0;
+    reg  [9:0] ps2_key_latched  = 0;
     always @(posedge clk_sys) begin
-        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_latched)) begin
+        ps2_key_usb_prev <= ps2_key_usb[9:0];
+        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
             // Suppress a stale release: if this is a release (pressed=0)
             // and the code is still present somewhere in the live,
             // slot-independent snapshot, the key hasn't really gone away
@@ -81,6 +99,13 @@ module tb_compaction_fix;
         begin
             cont3_key = {4'h4, 28'h0};
             cont3_joy = {sc1, sc2, 8'h00, 8'h00};
+        end
+    endtask
+
+    task set_keys3(input [7:0] sc1, input [7:0] sc2, input [7:0] sc3);
+        begin
+            cont3_key = {4'h4, 28'h0};
+            cont3_joy = {sc1, sc2, sc3, 8'h00};
         end
     endtask
 
@@ -145,6 +170,44 @@ module tb_compaction_fix;
         set_keys(8'h00, 8'h00);
         repeat (600) @(posedge clk_sys);
         select_row(5); check(hw_key_data[0] === 1'b1, "sanity: genuine release still works");
+
+        // Regression check for the cascading-stuck bug: after a suppressed
+        // (compaction) release, unrelated keys pressed afterward - and the
+        // SAME key pressed again later - must not be silently dropped just
+        // because their content happens to coincide with whatever was
+        // last evaluated. Real hardware report this reproduces: "long
+        // press right then a jump, long press left, then all key presses
+        // are sticky".
+        select_row(4); // row4: Up=col3, Down=col4 (used as stand-ins for jump/other actions)
+        set_keys(8'h12, 8'h00); // hold O (left)
+        repeat (600) @(posedge clk_sys);
+        set_keys(8'h12, 8'h13); // O still held, P (right) newly pressed
+        repeat (600) @(posedge clk_sys);
+        set_keys(8'h13, 8'h00); // release O only -> compaction, suppresses O's stale-adjacent event
+        repeat (600) @(posedge clk_sys);
+
+        // "jump" (an unrelated key, e.g. M) pressed and released right after,
+        // in a THIRD scancode slot - P must stay in its own slot throughout
+        set_keys3(8'h13, 8'h00, 8'h10); // P still in sc1, M (jump) newly in sc3
+        repeat (600) @(posedge clk_sys);
+        select_row(7); check(hw_key_data[2] === 1'b0, "post-suppression: unrelated key (jump) pressed");
+        set_keys(8'h13, 8'h00); // release jump only, P stays in sc1
+        repeat (600) @(posedge clk_sys);
+        select_row(7); check(hw_key_data[2] === 1'b1, "post-suppression: unrelated key (jump) released cleanly");
+
+        // release P (right) - must still work, not stuck from the earlier suppression
+        select_row(5); check(hw_key_data[0] === 1'b0, "post-suppression: P still correctly held");
+        set_keys(8'h00, 8'h00);
+        repeat (600) @(posedge clk_sys);
+        select_row(5); check(hw_key_data[0] === 1'b1, "post-suppression: P releases cleanly");
+
+        // press O (left) again - must not be stuck from its earlier suppressed event
+        set_keys(8'h12, 8'h00);
+        repeat (600) @(posedge clk_sys);
+        select_row(5); check(hw_key_data[1] === 1'b0, "post-suppression: O presses again cleanly");
+        set_keys(8'h00, 8'h00);
+        repeat (600) @(posedge clk_sys);
+        select_row(5); check(hw_key_data[1] === 1'b1, "post-suppression: O releases again cleanly");
 
         if (errors == 0) $display("\n==== ALL COMPACTION-FIX CHECKS PASSED ====");
         else $display("\n==== %0d COMPACTION-FIX CHECK(S) FAILED ====", errors);

@@ -1,19 +1,7 @@
 `timescale 1ns/1ps
 // Multi-key (simultaneous key hold) testbench - the actual game-controls
-// use case: multiple keys held at once, both released together, and
-// sequential different combos.
-//
-// KNOWN OPEN ISSUE (not covered here, found while writing this test - see
-// src/fpga/core/usbkbd/README.md "Known limitation"): if a HID host
-// compacts the scancode slot array when one of several held keys is
-// released (the still-held key(s) shift to a lower slot index), the slot
-// they vacate still remembers its old occupant and emits a stale break
-// for that code, which can race with and overwrite the still-held key's
-// press state in keyboard.sv (since keys[][] is indexed by PS/2 code, not
-// by which HID slot reported it). Whether this actually triggers depends
-// on whether the real Pocket firmware compacts slots on release, which
-// isn't confirmed - needs real-hardware testing (hold 2+ keys, release
-// one, check if the other sticks).
+// use case: multiple keys held at once, one released while others remain,
+// slot reassignment/compaction by the HID host as keys come and go.
 
 module tb_multikey;
 
@@ -36,10 +24,12 @@ module tb_multikey;
         .ps2_key(ps2_key_usb)
     );
 
-    reg        ps2_toggle      = 0;
-    reg  [9:0] ps2_key_latched = 0;
+    reg  [9:0] ps2_key_usb_prev = 0; // raw source value, ALWAYS updates - never gated
+    reg        ps2_toggle       = 0;
+    reg  [9:0] ps2_key_latched  = 0;
     always @(posedge clk_sys) begin
-        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_latched)) begin
+        ps2_key_usb_prev <= ps2_key_usb[9:0];
+        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
             ps2_toggle      <= ~ps2_toggle;
             ps2_key_latched <= ps2_key_usb[9:0];
         end
@@ -94,12 +84,16 @@ module tb_multikey;
         select_row(1); check(hw_key_data[0] === 1'b0, "combo hold: 'a' still pressed");
         select_row(1); check(hw_key_data[2] === 1'b0, "combo hold: 'd' still pressed");
 
-        // Release both together (no slot compaction involved - the known
-        // open issue above is specifically about compaction, not this)
+        // Release 'a' only - HID host compacts: 'd' shifts from slot2 to slot1
+        set_keys(8'h07, 8'h00); // d moves to slot1, slot2 now empty
+        repeat (600) @(posedge clk_sys);
+        select_row(1); check(hw_key_data[0] === 1'b1, "release 'a' (compaction): 'a' bit released");
+        select_row(1); check(hw_key_data[2] === 1'b0, "release 'a' (compaction): 'd' bit STILL pressed after shifting slots");
+
+        // Now release 'd' too
         set_keys(8'h00, 8'h00);
         repeat (600) @(posedge clk_sys);
-        select_row(1); check(hw_key_data[0] === 1'b1, "release a+d: 'a' released");
-        select_row(1); check(hw_key_data[2] === 1'b1, "release a+d: 'd' released");
+        select_row(1); check(hw_key_data[2] === 1'b1, "release 'd': released cleanly");
 
         // Rapid combo: press w+a together, hold, release both together, then press s+d
         set_keys(8'h1A, 8'h04); // w slot1, a slot2
