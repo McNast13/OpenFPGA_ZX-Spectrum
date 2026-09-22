@@ -46,13 +46,35 @@ existed. The *next* worst path after the edge fix ran from inside
 `kb_fifo` all the way to `core_top.sv`'s own `ps2_key_latched` register -
 the one register `keyboard.sv` actually reads pressed/code from, so
 occasional metastability landing there is about as consequential a place
-as this design has. `core_top.sv` now registers `usb_kbd`'s `ps2_key`
-output once (`ps2_key_usb_r`) before using it, splitting that single long
+as this design has. `core_top.sv` registered `usb_kbd`'s `ps2_key` output
+once (`ps2_key_usb_r`) before using it, splitting that single long
 combinational hop into two shorter ones - the same reasoning as the
 original `ps2_key` pipeline register early in this file's history, just
 correctly composed with the toggle/latch and suppression logic added
-since. Immediate (not just sustained-play) sticky keys were still
-reported with the edge fix alone; this pipeline register is the response.
+since. That cut total setup-timing violation (TNS) by about 92%
+(-127ns -> -10ns), but a hardware report ("random keypresses sticky after
+~4 lines of typed characters", "Renegade immediately sticky after losing
+a life") meant it wasn't fully resolved - still much better than before,
+just not enough.
+
+## Local modification: `key_mgr.sv`'s output is registered, not a plain assign
+
+The remaining worst path after both fixes above ran from inside `kb_fifo`
+to `core_top.sv`'s new `ps2_key_usb_r` register - i.e. it had moved one
+hop earlier, not gone. The actual source: `key_mgr`'s `key_code`/
+`key_pressed`/`key_strobe` outputs were a plain `assign` of
+`key_code_array[key_idx]`/etc, and for whichever slot `key_idx` currently
+selects, that's a LIVE, same-cycle combinational value straight out of
+the per-slot state machine (`current_state[i]`/`scancode_saved[i]`
+feeding through that slot's `always_comb` block) - so the entire
+per-slot FSM sat combinationally between the FIFO this module reads from
+and the first register in `core_top.sv` that captures anything from it,
+regardless of how many registers got added downstream of `usb_keyboard`'s
+top-level `ps2_key` output. Registered `key_code`/`key_pressed`/
+`key_strobe` here instead, capping this specific hop at one clock period.
+Nothing else in this design reads these three signals (`key_arbiter`
+doesn't; only `usb_keyboard.sv`'s top-level `ps2_key` assign does), so
+the extra cycle of latency is free.
 
 ## Local modification: `kb_fifo.sv`'s key-repeat controller is disabled
 

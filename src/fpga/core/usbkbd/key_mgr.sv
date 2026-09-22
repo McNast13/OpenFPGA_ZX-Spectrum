@@ -162,8 +162,29 @@ module key_mgr
         end
     end
 
-    assign key_code    = key_code_array[key_idx];
-    assign key_pressed = key_pressed_array[key_idx];
-    assign key_strobe  = key_strobe_array[key_idx];
+    // MODIFIED from upstream: registered output, not a plain continuous
+    // assign of key_code_array[key_idx]/etc. key_idx selects a LIVE,
+    // same-cycle combinational value out of the per-slot state machine
+    // above (current_state[i]/scancode_saved[i] feeding straight through
+    // key_code_array[i]'s always_comb for whichever index is presently
+    // selected) - so the old assign put this module's entire per-slot FSM
+    // combinationally between the FIFO this reads from and the register
+    // that finally captures ps2_key three modules up in core_top.sv. CI's
+    // timing report kept finding its worst path inside this exact chain
+    // even after two rounds of adding pipeline registers downstream in
+    // core_top.sv (which only shortened the hop AFTER this point, not
+    // this state-machine-to-output hop itself) - registering here instead
+    // caps this specific hop at one clock period, same reasoning as
+    // those, just one level deeper. Nothing else in this design reads
+    // key_code/key_pressed/key_strobe (key_arbiter doesn't; only
+    // usb_keyboard.sv's top-level ps2_key assign does), so the extra
+    // cycle of latency is free - the whole downstream chain already
+    // tolerates arbitrary latency by design (edge/content-triggered, not
+    // timing-critical).
+    always_ff @(posedge clk) begin
+        key_code    <= key_code_array[key_idx];
+        key_pressed <= key_pressed_array[key_idx];
+        key_strobe  <= key_strobe_array[key_idx];
+    end
 
 endmodule
