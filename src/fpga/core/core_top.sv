@@ -1738,6 +1738,19 @@ wire [15:0] cont1_key_s;
       ce_7mp
   );
 
+// Second attached controller, for the independent Player 2 joystick
+// selector below - same treatment as cont1_key_s (matched clock, so the
+// two controllers' bits are sampled consistently relative to each other).
+wire [15:0] cont2_key_s;
+
+  synch_3 #(
+      .WIDTH(16)
+  ) cont2_s (
+      cont2_key,
+      cont2_key_s,
+      ce_7mp
+  );
+
 reg [4:0] key_data;
 initial begin
   vkb_keyrowFE<=5'b11111;  
@@ -2003,24 +2016,45 @@ always @(posedge clk_sys) begin
 	kemp_dout <= kemp_mode ? mouse_data : {2'b00, joyk};
 end
 */
-wire [2:0] jsel  = status[19:17];
+// Player 1 / Player 2 Joystick type selectors - replaces the old single
+// shared jsel (status[19:17], now retired - see main.c). Each
+// independently picks Kempston/Sinclair I/Sinclair II/Cursor; the OSD
+// firmware enforces the two can never select the same type
+// (process_menu()'s case 2 list handler in main.c skips over whichever
+// value the other player currently holds), so for any convention below,
+// at most one of (p1type==N, p2type==N) is ever true - whichever player
+// currently holds a convention drives it from their own controller; if
+// neither player has it, it's inactive (matching the original design's
+// all-zero "not this jsel value" behaviour, just decided per-player-slot
+// now instead of by a single global selector).
+wire [1:0] p1type    = status[44:43]; // 0=Kempston 1=Sinclair I 2=Sinclair II 3=Cursor
+wire [1:0] p2type    = status[46:45]; // same encoding
+wire       keymap_en = status[47];    // Key Mapped Joystick (P1) - independent on/off, not part of the P1/P2 slot system
 
 //kempston port 1F
-//wire [5:0] joyk  = !jsel ? (joy0[5:0] | joy1[5:0]) : 6'd0;
-wire [5:0] joyk  = !jsel ? {cont1_key_s[5],cont1_key_s[4],cont1_key_s[0],cont1_key_s[1],cont1_key_s[2],cont1_key_s[3]} : 6'd0;
+wire [5:0] joyk  = (p1type==0) ? {cont1_key_s[5],cont1_key_s[4],cont1_key_s[0],cont1_key_s[1],cont1_key_s[2],cont1_key_s[3]}
+                 : (p2type==0) ? {cont2_key_s[5],cont2_key_s[4],cont2_key_s[0],cont2_key_s[1],cont2_key_s[2],cont2_key_s[3]}
+                 : 6'd0;
 
 //sinclair 1 67890
-wire [4:0] joys1 = ({5{jsel[2:0]==1}} & {cont1_key_s[2], cont1_key_s[3], cont1_key_s[1], cont1_key_s[0], cont1_key_s[4]});// | ({5{jsel[1:0]==1}} & {cont2_key_s[2], cont2_key_s[3], cont2_key_s[1], cont2_key_s[0], cont2_key_s[4]});
+wire [4:0] joys1 = (p1type==1) ? {cont1_key_s[2], cont1_key_s[3], cont1_key_s[1], cont1_key_s[0], cont1_key_s[4]}
+                 : (p2type==1) ? {cont2_key_s[2], cont2_key_s[3], cont2_key_s[1], cont2_key_s[0], cont2_key_s[4]}
+                 : 5'd0;
 
 //sinclair 2 12345
-wire [4:0] joys2 = ({5{jsel[2:0]==2}} & {cont1_key_s[4], cont1_key_s[0], cont1_key_s[1], cont1_key_s[3], cont1_key_s[2]});// |({5{jsel[1]}} & {cont2_key_s[4], cont2_key_s[0], cont2_key_s[1], cont2_key_s[3], cont2_key_s[2]});
+wire [4:0] joys2 = (p1type==2) ? {cont1_key_s[4], cont1_key_s[0], cont1_key_s[1], cont1_key_s[3], cont1_key_s[2]}
+                 : (p2type==2) ? {cont2_key_s[4], cont2_key_s[0], cont2_key_s[1], cont2_key_s[3], cont2_key_s[2]}
+                 : 5'd0;
 
 //cursor 56780
-wire [4:0] joyc1 = {5{jsel[2:0]==3}} & ({cont1_key_s[1], cont1_key_s[0], cont1_key_s[3],1'b0, cont1_key_s[4]});// | {cont2_key_s[1], cont2_key_s[0], cont2_key_s[3], 1'b0, cont2_key_s[4]});
-//wire [4:0] joyc2 = {5{jsel[2]}} & {cont1_key_s[2] | cont2_key_s[2], 4'b0000};
-wire [4:0] joyc2 = {5{jsel[2:0]==3}} & {cont1_key_s[2] , 4'b0000};
+wire [4:0] joyc1 = (p1type==3) ? {cont1_key_s[1], cont1_key_s[0], cont1_key_s[3], 1'b0, cont1_key_s[4]}
+                 : (p2type==3) ? {cont2_key_s[1], cont2_key_s[0], cont2_key_s[3], 1'b0, cont2_key_s[4]}
+                 : 5'd0;
+wire [4:0] joyc2 = (p1type==3) ? {cont1_key_s[2], 4'b0000}
+                 : (p2type==3) ? {cont2_key_s[2], 4'b0000}
+                 : 5'd0;
 
-wire [4:0] joykb1 = {5{jsel[2:0]!=4}} | (joykey_final);// | {cont2_key_s[1], cont2_key_s[0], cont2_key_s[3], 1'b0, cont2_key_s[4]});
+wire [4:0] joykb1 = keymap_en ? joykey_final : 5'b11111;
 
 
 

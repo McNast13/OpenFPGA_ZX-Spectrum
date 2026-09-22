@@ -33,7 +33,9 @@ boot.rom is a collection of required ROMs, however it does not contain a full se
 
 USB keyboard support - plug a USB keyboard into the Analogue Dock and it drives the Spectrum keyboard matrix directly. F1-F11 and Ctrl/Shift/Alt work as documented below.
 
-Key Mapped Joystick (allows Left, Right, Up, Down, A, B, X, Y, L Trig and R Trig to be mapped to keyboard keys).
+Independent Player 1 / Player 2 Joystick type selectors (Start menu) - each of the two attached controllers can be set to Kempston, Sinclair I, Sinclair II or Cursor independently, for genuine 2-player games. The menu won't let both players select the same type at once.
+
+Key Mapped Joystick (P1) (allows Left, Right, Up, Down, A, B, X, Y, L Trig and R Trig on controller 1 to be mapped to keyboard keys) - now a separate on/off toggle rather than one of the Player 1 type choices, so it can be used alongside a Player 1 joystick type if desired.
 
 - Note: if using a different joystick type X, Y, L Trig and R Trig will still function to allow for extra keys to be mapped
 
@@ -77,6 +79,8 @@ needed) via `src/fpga/core/keyboard.sv`'s F-key detection:
 Added - Real USB keyboard support via the Analogue Dock. `src/fpga/core/keyboard.sv` decodes the USB HID report directly to the Spectrum matrix every cycle (no PS/2 intermediate step, no per-key state) - see `src/fpga/core/usbkbd/README.md` for the full architecture and what is and isn't reachable from the keyboard (menu access remains controller-only, see above).
 
 Fixed - `Fn`/`mod` (F-key and modifier shortcuts) were declared as `wire` but driven procedurally from the OSD soft CPU, which would fail synthesis. They are now driven correctly and merged with the hardware-keyboard source.
+
+Added - Independent Player 1 / Player 2 Joystick type selectors, replacing the old single shared Joystick option (which had unused, commented-out `cont2_key` wiring already sketched in - finished it properly instead). Each of the two attached controllers picks Kempston/Sinclair I/Sinclair II/Cursor independently; the two can never be set to the same type (enforced in the OSD menu itself). Key Mapped Joystick is now a separate on/off toggle for Player 1 rather than one of the shared type choices.
 
 ### v0.7.0-beta
 
