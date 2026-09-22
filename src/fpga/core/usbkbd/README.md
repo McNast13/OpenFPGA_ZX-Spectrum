@@ -42,17 +42,96 @@ of margin instead of half.
 That fix removed that specific path from CI's timing report entirely, but
 didn't fully close clk_sys setup timing on its own - the device is 93%
 ALM-full and was already marginal (-0.15ns) before any keyboard work
-existed. The *next* worst path after the edge fix ran from inside
-`kb_fifo` all the way to `core_top.sv`'s own `ps2_key_latched` register -
-the one register `keyboard.sv` actually reads pressed/code from, so
-occasional metastability landing there is about as consequential a place
-as this design has. `core_top.sv` now registers `usb_kbd`'s `ps2_key`
-output once (`ps2_key_usb_r`) before using it, splitting that single long
-combinational hop into two shorter ones - the same reasoning as the
-original `ps2_key` pipeline register early in this file's history, just
-correctly composed with the toggle/latch and suppression logic added
-since. Immediate (not just sustained-play) sticky keys were still
-reported with the edge fix alone; this pipeline register is the response.
+existed. The *next* worst path ran from inside `kb_fifo` all the way to
+`core_top.sv`'s own `ps2_key_latched` register - the one register
+`keyboard.sv` actually reads pressed/code from, so occasional
+metastability landing there is about as consequential a place as this
+design has. Two register-level attempts followed, one that helped and one
+that didn't:
+
+- Adding a plain pipeline register on `usb_kbd`'s `ps2_key` output
+  (`ps2_key_usb_r`) *did* measurably improve the timing report (TNS
+  -127ns -> -10ns), but wasn't enough on its own - a hardware report of
+  sticky keys, still present, confirmed it.
+- Registering `key_mgr.sv`'s output one level deeper (turning its plain
+  `assign key_code = ...` into a clocked register) looked like the same
+  fix applied earlier and one hop closer to the source, but *regressed*
+  the timing report (TNS -10ns -> -67ns). At 92%+ ALM-full, register
+  insertion is not reliably monotonic - the placer can end up worse off
+  even though the logical path is shorter, because the extra register
+  has to land *somewhere* in an already-congested fabric. This was
+  reverted before shipping (`git revert` of that commit) once the CI
+  timing report was checked and the regression confirmed - do not
+  re-attempt this specific change without re-verifying against a fresh
+  timing report, not just "shorter combinational path = better" logic.
+
+Both were still chasing timing path-by-path in the clk_sys domain, which
+this design has limited headroom for. The section below replaced this
+approach entirely rather than continuing to add clk_sys pipeline stages.
+
+## The USB keyboard bridge runs on `clk_74a`, not `clk_sys`
+
+Chasing individual clk_sys paths one at a time was fighting the actual
+constraint: this device is 92-93% ALM-full, and clk_sys itself was
+already marginal before any keyboard code existed, so every register
+added to buy back timing has to land somewhere in an already-congested
+placement - sometimes it helps (the `ps2_key_usb_r` pipeline register
+above), sometimes it measurably doesn't (the `key_mgr.sv` attempt above).
+None of this logic needs to run anywhere near clk_sys speed in the first
+place - keyboard events are human-speed. So instead of continuing to
+chase paths, the whole `usb_keyboard` instantiation, the seven "live
+snapshot" `hid2ps2_key`/`hid2ps2_mod` instances, and all the toggle/
+latch/suppression logic between them now run on `clk_74a` (13.468ns
+period vs clk_sys's 8.928ns) - a real, independent clock this design
+already declares and constrains as asynchronous to clk_sys in
+`core_constraints.sdc` via `set_clock_groups`, so this needed no new SDC
+work, just correct clock-domain-crossing at the boundary:
+
+- `cont3_key`/`cont3_joy`/`cont3_trig` (APF bridge inputs, native to
+  neither clock) are synchronized into clk_74a with `synch_3` before use,
+  the same treatment `cont1_key` already gets elsewhere in `core_top.sv`
+  - without it a bus sampled mid-transition can tear, and apf2hid's own
+  downstream pipeline doesn't fix that since it just re-registers
+  whatever value it was handed.
+- The toggle/latch/suppression logic that used to run on clk_sys now runs
+  entirely on clk_74a instead, staging content a full clk_74a cycle
+  before flipping the toggle bit that signals it, so a single-bit
+  `synch_3` synchronizer can safely carry the toggle into clk_sys without
+  the risk of sampling multi-bit content mid-change (a toggle bit can't
+  tear; sampling `ps2_key_latched_74a` directly from clk_sys without this
+  staging could).
+- A depth-2 queue (`ps2_q0`/`ps2_q1`/`ps2_qcount`) holds pending events
+  rather than a single "pending toggle" flag, because releasing two held
+  keys at once (or a direction change with slot compaction) can produce
+  two real events one clk_74a cycle apart, and a single-flag design's
+  `if (pending) ... else if (new event) ...` structure silently dropped
+  the second one when it landed on the exact cycle the first one's
+  toggle was flipping.
+- Draining that queue is gated by a request/ack handshake
+  (`ps2_ack_74a`, itself `ps2_toggle_sync` echoed back into clk_74a
+  through a second `synch_3`), not just "one cycle per queued entry".
+  Without it, two back-to-back drains produce a toggle pulse only about
+  27ns wide - shorter than clk_sys's own 4-stage `synch_3` detection
+  latency at this clock's relative speed - so the synchronizer can merge
+  both transitions into one and only ever report the *later* event's
+  content, silently losing the earlier one (confirmed via a dedicated
+  trace testbench: a real key's release toggle flip never produced its
+  own rise/fall on the clk_sys side at all when a second event followed
+  it too closely). The handshake makes the drain side wait for
+  confirmation that clk_sys has caught up before flipping the toggle
+  again, so back-to-back events are serialized correctly instead of
+  racing the synchronizer's own latency.
+
+All six testbenches below reproduce this exactly (two independent
+`always` clock generators, `clk_sys` and `clk_74a`, at their real
+periods) and pass with this design; `tb_compaction_fix.sv` in particular
+is what caught both bugs above during development - first the dropped-
+event bug (as `hw_key_data` never showing a key released), then, after
+the queue fix alone didn't change the result, the fast-pulse merge bug
+(found by tracing `ps2_toggle_74a`/`ps2_ack_74a` cycle-by-cycle around
+the failure and noticing the same content was reaching clk_sys twice
+while the first event's toggle transition was never independently
+observed there at all).
 
 ## Local modification: `kb_fifo.sv`'s key-repeat controller is disabled
 
@@ -80,12 +159,17 @@ continuously reflecting whichever of the 14 HID slots the round-robin
 arbiter currently happens to be looking at. `core_top.sv` converts this
 into a proper toggle by latching `pressed`/`code` and flipping a toggle bit
 whenever strobe is high **and** the content differs from what was last
-latched - not simply on strobe's rising edge, because when two keys change
-in the *same* arbiter pass (e.g. releasing two held keys at once), both can
-land on the arbiter's 1-cycle "empty slot" fast path back-to-back with no
-gap between them, so strobe never drops back to 0 between the two events -
-an edge-only detector misses the second one. Confirmed via
-`tb_multikey.sv`.
+seen (`ps2_key_usb_prev_74a`, the raw previous-cycle value - see "The USB
+keyboard bridge runs on clk_74a" above for why not the output latch or a
+separate "last seen" register) - not simply on strobe's rising edge,
+because when two keys change in the *same* arbiter pass (e.g. releasing
+two held keys at once), both can land on the arbiter's 1-cycle "empty
+slot" fast path back-to-back with no gap between them, so strobe never
+drops back to 0 between the two events - an edge-only detector misses the
+second one. Confirmed via `tb_multikey.sv`. The queue and handshake
+described above exist specifically so that catching both back-to-back
+events like this also gets both of them all the way to clk_sys correctly,
+not just detected on the clk_74a side.
 
 ## Fixed: releasing one of several held keys could drop another
 
@@ -120,12 +204,15 @@ regression from the "ps2_key_usb_prev" fix), `tb_mash.sv` (all 8 pairs of
 the QAOP+Space beat-em-up scheme, holding one key while rapidly mashing
 another) and `tb_mash3.sv` (three keys at once - hold two, mash a third)
 are self-contained Icarus Verilog testbenches instantiating this bridge
-exactly as `core_top.sv` wires it, to verify press/hold/release behaviour
-without real hardware. All six pass as of the fixes documented above. They
-can't be run directly against these files with Icarus (`brew install icarus-verilog`)
-as-is: Icarus's SystemVerilog support has gaps that Quartus doesn't share
-(enum assignment needs an explicit cast, forward-referenced declarations
-need reordering, a `logic` port can't have both an initializer and a
+exactly as `core_top.sv` wires it - two independent clock generators
+(`clk_sys` at 8.928ns, `clk_74a` at 13.468ns) plus `common.v`'s `synch_3`
+for the clock-domain crossings, matching the real design - to verify
+press/hold/release behaviour without real hardware. All six pass as of
+the fixes documented above. They can't be run directly against these
+files with Icarus (`brew install icarus-verilog`) as-is: Icarus's
+SystemVerilog support has gaps that Quartus doesn't share (enum
+assignment needs an explicit cast, forward-referenced declarations need
+reordering, a `logic` port can't have both an initializer and a
 continuous assign) - none of these are real bugs, Quartus has built this
 design cleanly multiple times in CI. Make Icarus-only patched copies of
 `key_arbiter.sv`, `key_mgr.sv` and `usb_keyboard.sv` to work around them
@@ -136,6 +223,6 @@ the `= 11'h0` initializer on `usb_keyboard`'s `ps2_key` port), then:
 ```
 iverilog -g2012 -o tb.vvp tb_keyboard.sv usb_keyboard.sv apf2hid.sv \
   hid2ps2_key.sv hid2ps2_mod.sv kb_fifo.sv key_arbiter.sv key_mgr.sv \
-  ../keyboard.sv
+  ../keyboard.sv ../../apf/common.v
 vvp tb.vvp
 ```
