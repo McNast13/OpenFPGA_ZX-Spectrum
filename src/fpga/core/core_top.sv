@@ -1754,34 +1754,40 @@ wire [15:0] cont2_key_s;
 // Docked USB mouse report (Analogue's openFPGA bus-communication docs:
 // type 0x5 in cont4_key[31:28], report counter in cont4_key[15:0],
 // buttons in cont4_joy[31:16], relative X in cont4_joy[15:0], relative Y
-// in cont4_trig[15:0]) - synchronized into clk_sys the same way
-// cont1_key/cont2_key/cont3_key already are. A mouse report arrives at
-// most at the USB polling rate (>=1ms, >100,000 clk_sys cycles between
-// changes) - nowhere near fast enough for this plain synch_3 treatment to
-// ever miss a transition, unlike the keyboard's same-cycle multi-slot
-// case that needed a queue+handshake. See mouse.sv/core_top.sv's
-// instantiation below for why the report counter specifically still
-// needs gating by report type before use.
+// in cont4_trig[15:0]).
 //
-// Only synchronize the bits actually read below (type + counter from
-// cont4_key, buttons + X from cont4_joy - cont4_trig's Y is already a
-// natural 16-bit fit) rather than the full 32-bit words - this design is
-// already 92%+ ALM-full, and the first attempt at this (synchronizing
-// all 96 raw bits) pushed the chip's overall placement pressure just
-// far enough to flip two PRE-EXISTING, otherwise-unrelated SDRAM
-// refresh-counter paths into violation (confirmed via the CI timing
-// report: the two failing paths were core_top:ic|sdram:ram|
-// refresh_count[9/10]~DUPLICATE, nothing to do with this feature's own
-// logic at all - a placement knock-on effect, not a logic problem).
-// Synchronizing only the ~39 bits genuinely needed removes that pressure
-// instead of trying to claw back margin on unrelated SDRAM paths this
-// change doesn't even touch directly.
-wire [19:0] cont4_key_s;  // {type[3:0], counter[15:0]}
-wire [18:0] cont4_joy_s;  // {buttons[2:0], dx[15:0]}
-wire [15:0] cont4_trig_s; // dy[15:0]
-synch_3 #(.WIDTH(20)) cont4_key_sync  ({cont4_key[31:28], cont4_key[15:0]}, cont4_key_s,  clk_sys);
-synch_3 #(.WIDTH(19)) cont4_joy_sync  ({cont4_joy[18:16], cont4_joy[15:0]}, cont4_joy_s,  clk_sys);
-synch_3 #(.WIDTH(16)) cont4_trig_sync (cont4_trig,                         cont4_trig_s, clk_sys);
+// Synchronized into clk_74a, not clk_sys - same reasoning as the USB
+// keyboard bridge: this device is already 92%+ ALM-full, and clk_sys
+// itself has essentially no spare timing budget. A first attempt kept
+// the whole mouse.v accumulator (a 20-bit signed adder plus overflow
+// compare, run every time a report arrives) on clk_sys; CI's timing
+// report showed 2 violated paths afterward, and - notably - NEITHER
+// violating path was in the mouse logic itself: both were
+// core_top:ic|sdram:ram|refresh_count[9/10]~DUPLICATE -> SDRAM_A[*], the
+// SDRAM controller's pre-existing refresh logic, pushed over the edge by
+// the added placement pressure elsewhere on the die. Narrowing the
+// synchronizers to only the bits actually used made no difference at all
+// (byte-for-byte identical timing report) - Quartus was already pruning
+// the genuinely-unused bits regardless of how the synchronizer was
+// declared in source; the accumulator's own logic, by contrast, is
+// entirely load-bearing and can't be optimized away, so THAT is what
+// needed to move. clk_74a has demonstrated ample margin throughout this
+// project already; mouse reports are USB-polling-rate-spaced (>=1ms,
+// >7,000 clk_74a cycles apart at minimum), nowhere near fast enough for
+// plain synch_3 to ever miss a transition. Only the small, timing-
+// critical address-decode mux a Z80 I/O read actually needs within a
+// handful of clk_sys cycles stays on clk_sys - see mouse_dx/mouse_dy/
+// mouse_buttons_s below, synchronized back from clk_74a as plain
+// continuously-valid levels (self-healing against a torn CDC sample the
+// same way the keyboard matrix is, since there's no discrete event here
+// to lose - just a value that settles a cycle later if ever sampled
+// mid-change).
+wire [31:0] cont4_key_s;
+wire [31:0] cont4_joy_s;
+wire [15:0] cont4_trig_s;
+synch_3 #(.WIDTH(32)) cont4_key_sync  (cont4_key,  cont4_key_s,  clk_74a);
+synch_3 #(.WIDTH(32)) cont4_joy_sync  (cont4_joy,  cont4_joy_s,  clk_74a);
+synch_3 #(.WIDTH(16)) cont4_trig_sync (cont4_trig, cont4_trig_s, clk_74a);
 
 reg [4:0] key_data;
 initial begin
@@ -2048,34 +2054,69 @@ wire       kemp_sel = addr[5:0] == 6'h1F;
 // anywhere in this path. status[35:34]: 0=Disabled, nonzero=enabled;
 // status[35] doubles as the left/right button swap flag, matching
 // upstream MiSTer's own status[35] usage for the same purpose.
+//
+// is_mouse/mouse_counter/mouse_dx/mouse_dy/mouse_buttons and the mouse.v
+// instance itself all run on clk_74a now (see the cont4_*_s
+// synchronizers' comment above for why) - only mouse_en, the final
+// dx/dy/buttons synchronized level outputs, and the addr-based port
+// decode below stay on clk_sys, since a Z80 I/O read needs those
+// resolved within a handful of clk_sys cycles.
 wire       mouse_en   = |status[35:34];
-wire       is_mouse   = cont4_key_s[19:16] == 4'h5; // packed {type,counter} - see cont4_key_s's declaration above
+wire       is_mouse_74a   = cont4_key_s[31:28] == 4'h5;
 // Hold the report counter at a fixed value whenever cont4 isn't
 // currently reporting a mouse, so mouse.v's "did the counter change"
 // check can never fire on an unrelated gamepad's cont4 traffic (which
 // uses a completely different layout at these same bit positions) -
 // see mouse.v's header comment.
-wire [15:0] mouse_counter = is_mouse ? cont4_key_s[15:0] : 16'h0;
-wire signed [15:0] mouse_dx = cont4_joy_s[15:0];
-wire signed [15:0] mouse_dy = cont4_trig_s[15:0];
-wire  [2:0] mouse_buttons   = cont4_joy_s[18:16]; // {middle,right,left} - packed {buttons,dx}, see cont4_joy_s's declaration above
+wire [15:0] mouse_counter_74a = is_mouse_74a ? cont4_key_s[15:0] : 16'h0;
+wire signed [15:0] mouse_dx_74a = cont4_joy_s[15:0];
+wire signed [15:0] mouse_dy_74a = cont4_trig_s[15:0];
+wire  [2:0] mouse_buttons_74a   = cont4_joy_s[18:16]; // {middle,right,left}
 
-wire        mouse_reg_sel;
-wire  [7:0] mouse_data;
+wire  [7:0] mouse_dx_74a_out, mouse_dy_74a_out;
+wire  [2:0] mouse_buttons_74a_out;
 mouse u_mouse
 (
-	.clk_sys     ( clk_sys        ),
-	.reset       ( cold_reset     ),
-	.hid_counter ( mouse_counter  ),
-	.hid_dx      ( mouse_dx       ),
-	.hid_dy      ( mouse_dy       ),
-	.hid_buttons ( mouse_buttons  ),
-	.btn_swap    ( status[35]     ),
-	.addr        ( addr[10:8]     ),
-	.sel         ( mouse_reg_sel  ),
-	.dout        ( mouse_data     )
+	.clk         ( clk_74a             ),
+	.reset       ( cold_reset          ),
+	.hid_counter ( mouse_counter_74a   ),
+	.hid_dx      ( mouse_dx_74a        ),
+	.hid_dy      ( mouse_dy_74a        ),
+	.hid_buttons ( mouse_buttons_74a   ),
+	.dx_out      ( mouse_dx_74a_out    ),
+	.dy_out      ( mouse_dy_74a_out    ),
+	.buttons_out ( mouse_buttons_74a_out )
 );
-wire       mouse_sel = mouse_en & (addr[7:0] == 8'hDF) & mouse_reg_sel;
+
+// Plain level synchronizer, not a toggle/queue - mouse.v's outputs are
+// continuously valid (re-derived every clk_74a cycle from whatever the
+// accumulator currently holds, not a one-shot event), so a torn sample
+// here just means clk_sys reads a stale-by-one-cycle value that
+// self-corrects on the very next sample once the source has settled -
+// same reasoning as the keyboard matrix's own CDC, no handshake needed.
+wire [7:0] mouse_dx_s, mouse_dy_s;
+wire [2:0] mouse_buttons_s;
+synch_3 #(.WIDTH(19)) mouse_out_sync ({mouse_buttons_74a_out, mouse_dx_74a_out, mouse_dy_74a_out}, {mouse_buttons_s, mouse_dx_s, mouse_dy_s}, clk_sys);
+
+// addr[10:8] register select (#FADF/#FBDF/#FFDF -> buttons/X/Y) - the
+// address decode itself doesn't care whether a mouse is actually
+// connected right now (real Kempston Mouse hardware responds to these
+// ports unconditionally when addressed; mouse.v's accumulator just holds
+// whatever it last had, defaulting to dx=128/dy=0/no buttons if a mouse
+// was never connected - "is a mouse currently attached" only matters for
+// whether the accumulator ever updates, not for whether the port
+// responds).
+wire       mouse_reg_sel = (addr[10:8] == 3'b011) || (addr[10:8] == 3'b111) || (addr[9:8] == 2'b10);
+wire       mouse_sel     = mouse_en & (addr[7:0] == 8'hDF) & mouse_reg_sel;
+reg  [7:0] mouse_data;
+always @* begin
+	casex (addr[10:8])
+		3'b011:  mouse_data = mouse_dx_s;
+		3'b111:  mouse_data = mouse_dy_s;
+		3'bX10:  mouse_data = ~{5'b00000, mouse_buttons_s[2], mouse_buttons_s[~status[35]], mouse_buttons_s[status[35]]};
+		default: mouse_data = 8'hFF;
+	endcase
+end
 
 wire [7:0] kemp_dout =  vkb_state ? 8'h00 : mouse_sel ? mouse_data : {2'b00, joyk}; //disable kempton input when virtual keyboard is active
 // Player 1 / Player 2 Joystick type selectors - replaces the old single

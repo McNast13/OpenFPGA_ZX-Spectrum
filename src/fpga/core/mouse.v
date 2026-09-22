@@ -23,17 +23,26 @@
 // core_top.sv extracts it from the Pocket's cont4_* controller-bus report,
 // type 0x5 - see Analogue's openFPGA bus-communication docs) instead of a
 // MiSTer-style PS/2 mouse packet. hid_counter/hid_dx/hid_dy/hid_buttons are
-// already synchronized into clk_sys by the caller; this module never sees
-// a PS/2 packet byte, sign/overflow bit, or serial protocol of any kind -
-// hid_dx/hid_dy are plain signed values, no packet-format decoding needed.
-// The Kempston Mouse I/O-port side (addr/sel/dout, the accumulate-and-
-// saturate dx/dy logic) is unchanged from upstream - only the input side
-// changed shape.
+// already synchronized by the caller; this module never sees a PS/2 packet
+// byte, sign/overflow bit, or serial protocol of any kind - hid_dx/hid_dy
+// are plain signed values, no packet-format decoding needed.
+//
+// This is now a pure accumulator, nothing else: it runs on clk_74a (not
+// clk_sys - see core_top.sv's instantiation for why) and exposes dx/dy/
+// buttons as plain continuously-valid levels. The Kempston Mouse I/O-port
+// side (address decode, active-low inversion, left/right swap) moved out
+// to core_top.sv, which runs it on clk_sys against a synchronized copy of
+// these outputs - a Z80 I/O read has to resolve within a handful of
+// clk_sys cycles, so that part can't move to the slower clock the way the
+// accumulator itself safely can (mouse movement is human-speed; a Z80 I/O
+// read polling loop is not). The accumulate-and-saturate dx/dy math itself
+// is unchanged from upstream, just widened from 12 to 20 bits since HID's
+// delta field is up to 16 bits wide vs PS/2's 8-bit magnitude+sign format.
 ////////////////////////////////////////////////////////////////////////////////
 
 module mouse
 (
-	input        clk_sys,
+	input        clk, // clk_74a
 	input        reset,
 
 	// hid_counter increments (from the host, arbitrary step size) each
@@ -47,15 +56,15 @@ module mouse
 	input signed [15:0] hid_dx,
 	input signed [15:0] hid_dy,
 	input  [2:0] hid_buttons, // bit0=left bit1=right bit2=middle
-	input        btn_swap,
 
-	input  [2:0] addr,
-	output       sel,
-	output [7:0] dout
+	output [7:0] dx_out,
+	output [7:0] dy_out,
+	output [2:0] buttons_out // raw, active-high {middle,right,left} - core_top.sv's port-decode side does the Kempston active-low inversion and button swap
 );
 
-assign dout = data;
-assign sel  = port_sel;
+assign dx_out      = dx[7:0];
+assign dy_out      = dy[7:0];
+assign buttons_out = buttons;
 
 reg  [2:0] buttons;
 reg [19:0] dx; // 8 bits of Kempston-visible range + 12 bits of headroom -
@@ -66,20 +75,8 @@ reg [19:0] dy; // wide enough that even a full-range 16-bit HID delta can't
 wire [19:0] newdx = dx + {{4{hid_dx[15]}}, hid_dx};
 wire [19:0] newdy = dy + {{4{hid_dy[15]}}, hid_dy};
 
-reg   [7:0] data;
-reg         port_sel;
-always @* begin
-	port_sel = 1;
-	casex(addr)
-		 3'b011: data = dx[7:0];
-		 3'b111: data = dy[7:0];
-		 3'bX10: data = ~{5'b00000, buttons[2], buttons[~btn_swap], buttons[btn_swap]};
-		default: {port_sel,data} = 8'hFF;
-	endcase
-end
-
 reg [15:0] old_counter;
-always @(posedge clk_sys) begin
+always @(posedge clk) begin
 	if (reset) begin
 		dx          <= 20'd128; // dx != dy for better mouse detection
 		dy          <= 20'd0;
