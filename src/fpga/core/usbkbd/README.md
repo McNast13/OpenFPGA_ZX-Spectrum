@@ -5,6 +5,28 @@ Converts the Analogue Pocket openFPGA "docked keyboard" controller-bus report
 keyboard matrix, so a real USB keyboard connected via the Analogue Dock can
 drive `core/keyboard.sv`.
 
+## Scope: this only drives the Spectrum keyboard matrix
+
+The docked USB keyboard only ever reaches `core/keyboard.sv` via this
+bridge, and `keyboard.sv` only ever drives the Spectrum matrix, F1-F11
+(`Fn`), and the mod bits `core_top.sv` reads for the reset/speed/pause
+shortcuts documented in the top-level README. It has no path to, and
+cannot be extended to reach, any of the following:
+
+- This core's own on-screen menu (Start) or virtual keyboard overlay
+  (Select) - both read the attached gamepad directly in
+  `src/firmware/main.c`'s `processInput()` (`readJoypad()`, i.e.
+  `IO_JOYPAD`/`cont1_key`), entirely independent of this bridge.
+- The Analogue Pocket's own system menu (the controller's Home button) -
+  where files (`.tap`/`.tzx`/`.dsk`/`.z80`/`.sna`) actually get loaded.
+  Confirmed by inspecting `src/firmware/host.h`'s controller bit
+  definitions: there is no Home/Guide bit anywhere in what the core
+  receives. Analogue's platform firmware intercepts it before it ever
+  reaches the FPGA, so there is no signal this bridge - or anything else
+  in this core - could watch or forward even in principle.
+
+A controller is required for all of the above, keyboard or no keyboard.
+
 ## Architecture: no PS/2 intermediate step
 
 Earlier versions of this bridge vendored a MiSTer-style PS/2 translation

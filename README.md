@@ -31,9 +31,7 @@ boot.rom is a collection of required ROMs, however it does not contain a full se
 
 ### Pocket specfic features
 
-USB keyboard support - plug a USB keyboard into the Analogue Dock and it drives the Spectrum keyboard matrix directly (standard MiSTer PS/2 mapping). Ctrl/Alt/Shift+F11 reset shortcuts and Alt+F1-F6 machine-arch shortcuts work from the real keyboard too.
-
-Virtual keyboard (very basic for now - A press key, X toggle shifts)
+USB keyboard support - plug a USB keyboard into the Analogue Dock and it drives the Spectrum keyboard matrix directly. F1-F11 and Ctrl/Shift/Alt work as documented below.
 
 Key Mapped Joystick (allows Left, Right, Up, Down, A, B, X, Y, L Trig and R Trig to be mapped to keyboard keys).
 
@@ -41,13 +39,34 @@ Key Mapped Joystick (allows Left, Right, Up, Down, A, B, X, Y, L Trig and R Trig
 
 Border/Borderless video option
 
-Select brings up virtual keyboard
+**Menu access is controller-only.** The following all read the attached
+gamepad directly and have no USB keyboard equivalent - a docked keyboard
+cannot open, close, or navigate any of them:
 
-Start brings up menu
+- **Select** - this core's own on-screen virtual keyboard overlay (very
+  basic for now - A press key, X toggle shifts)
+- **Start** - this core's own on-screen menu (model select, tape/disk
+  options, etc.)
+- **L Trig & Start** - Pause/Unpause (warning: may crash your game, it
+  just holds CPU clock cycles)
+- **L Trig & Select** - Issue NMI
+- The **controller's Home button**, which opens the *Analogue Pocket's own*
+  system menu - this is where files (`.tap`/`.tzx`/`.dsk`/`.z80`/`.sna`
+  etc.) actually get loaded. This isn't part of the core at all: the
+  Pocket's firmware intercepts the Home button before it ever reaches the
+  FPGA, so there is no signal the core could watch or forward even if it
+  wanted to, and no keyboard shortcut can substitute for it. **Loading a
+  game/tape file always requires a controller with a Home button**, USB
+  keyboard or not.
 
-L Trig & Start - Pause/Unpause - warning, this may crash you game as it just holds CPU clock cycles
+From the USB keyboard itself, the following work directly (no controller
+needed) via `src/fpga/core/keyboard.sv`'s F-key detection:
 
-L Trig & Select - Issue NMI
+- F4-F8 (no modifier) - machine speed/architecture shortcuts
+- F9 (no modifier) - Pause/Unpause
+- Alt+F11 - cold reset
+- Ctrl+F11 - warm reset
+- Ctrl+Alt+F11 - shadow ROM reset (not on +3 models)
 
 
 
@@ -55,9 +74,9 @@ L Trig & Select - Issue NMI
 
 ### Unreleased (this fork)
 
-Added - Real USB keyboard support via the Analogue Dock. Wires the existing (previously unused) MiSTer `keyboard.sv` PS/2-to-matrix decoder up to the Pocket's docked-keyboard controller-bus report, using a small USB-HID-to-PS/2 bridge vendored from the OpenGateware project (`src/fpga/core/usbkbd/`, MIT licensed).
+Added - Real USB keyboard support via the Analogue Dock. `src/fpga/core/keyboard.sv` decodes the USB HID report directly to the Spectrum matrix every cycle (no PS/2 intermediate step, no per-key state) - see `src/fpga/core/usbkbd/README.md` for the full architecture and what is and isn't reachable from the keyboard (menu access remains controller-only, see above).
 
-Fixed - `Fn`/`mod` (F-key and modifier shortcuts) were declared as `wire` but driven procedurally from the OSD soft CPU, which would fail synthesis. They are now driven correctly and merged with the new hardware-keyboard source.
+Fixed - `Fn`/`mod` (F-key and modifier shortcuts) were declared as `wire` but driven procedurally from the OSD soft CPU, which would fail synthesis. They are now driven correctly and merged with the hardware-keyboard source.
 
 ### v0.7.0-beta
 
