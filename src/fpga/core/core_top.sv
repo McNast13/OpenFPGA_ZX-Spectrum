@@ -1762,12 +1762,26 @@ wire [15:0] cont2_key_s;
 // case that needed a queue+handshake. See mouse.sv/core_top.sv's
 // instantiation below for why the report counter specifically still
 // needs gating by report type before use.
-wire [31:0] cont4_key_s;
-wire [31:0] cont4_joy_s;
-wire [15:0] cont4_trig_s;
-synch_3 #(.WIDTH(32)) cont4_key_sync  (cont4_key,  cont4_key_s,  clk_sys);
-synch_3 #(.WIDTH(32)) cont4_joy_sync  (cont4_joy,  cont4_joy_s,  clk_sys);
-synch_3 #(.WIDTH(16)) cont4_trig_sync (cont4_trig, cont4_trig_s, clk_sys);
+//
+// Only synchronize the bits actually read below (type + counter from
+// cont4_key, buttons + X from cont4_joy - cont4_trig's Y is already a
+// natural 16-bit fit) rather than the full 32-bit words - this design is
+// already 92%+ ALM-full, and the first attempt at this (synchronizing
+// all 96 raw bits) pushed the chip's overall placement pressure just
+// far enough to flip two PRE-EXISTING, otherwise-unrelated SDRAM
+// refresh-counter paths into violation (confirmed via the CI timing
+// report: the two failing paths were core_top:ic|sdram:ram|
+// refresh_count[9/10]~DUPLICATE, nothing to do with this feature's own
+// logic at all - a placement knock-on effect, not a logic problem).
+// Synchronizing only the ~39 bits genuinely needed removes that pressure
+// instead of trying to claw back margin on unrelated SDRAM paths this
+// change doesn't even touch directly.
+wire [19:0] cont4_key_s;  // {type[3:0], counter[15:0]}
+wire [18:0] cont4_joy_s;  // {buttons[2:0], dx[15:0]}
+wire [15:0] cont4_trig_s; // dy[15:0]
+synch_3 #(.WIDTH(20)) cont4_key_sync  ({cont4_key[31:28], cont4_key[15:0]}, cont4_key_s,  clk_sys);
+synch_3 #(.WIDTH(19)) cont4_joy_sync  ({cont4_joy[18:16], cont4_joy[15:0]}, cont4_joy_s,  clk_sys);
+synch_3 #(.WIDTH(16)) cont4_trig_sync (cont4_trig,                         cont4_trig_s, clk_sys);
 
 reg [4:0] key_data;
 initial begin
@@ -2035,7 +2049,7 @@ wire       kemp_sel = addr[5:0] == 6'h1F;
 // status[35] doubles as the left/right button swap flag, matching
 // upstream MiSTer's own status[35] usage for the same purpose.
 wire       mouse_en   = |status[35:34];
-wire       is_mouse   = cont4_key_s[31:28] == 4'h5;
+wire       is_mouse   = cont4_key_s[19:16] == 4'h5; // packed {type,counter} - see cont4_key_s's declaration above
 // Hold the report counter at a fixed value whenever cont4 isn't
 // currently reporting a mouse, so mouse.v's "did the counter change"
 // check can never fire on an unrelated gamepad's cont4 traffic (which
@@ -2044,7 +2058,7 @@ wire       is_mouse   = cont4_key_s[31:28] == 4'h5;
 wire [15:0] mouse_counter = is_mouse ? cont4_key_s[15:0] : 16'h0;
 wire signed [15:0] mouse_dx = cont4_joy_s[15:0];
 wire signed [15:0] mouse_dy = cont4_trig_s[15:0];
-wire  [2:0] mouse_buttons   = cont4_joy_s[18:16]; // {middle,right,left}
+wire  [2:0] mouse_buttons   = cont4_joy_s[18:16]; // {middle,right,left} - packed {buttons,dx}, see cont4_joy_s's declaration above
 
 wire        mouse_reg_sel;
 wire  [7:0] mouse_data;
