@@ -822,6 +822,7 @@ set_global_assignment -name VERILOG_FILE core/divmmc.v
 set_global_assignment -name SYSTEMVERILOG_FILE core/sync_fifo.sv
 set_global_assignment -name SYSTEMVERILOG_FILE core/keyboard.sv
 set_global_assignment -name SYSTEMVERILOG_FILE core/usbkbd/apf2hid.sv
+set_global_assignment -name VERILOG_FILE core/mouse.v
 set_global_assignment -name QIP_FILE core/audio.qip
 set_global_assignment -name QIP_FILE core/mf_audio_pll.qip
 set_global_assignment -name SYSTEMVERILOG_FILE core/sound_i2s.sv

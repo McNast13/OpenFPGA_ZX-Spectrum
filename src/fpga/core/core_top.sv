@@ -520,7 +520,7 @@ wire [7:0] cpu_din =
 		fdc_sel  ? fdc_dout                                   :
 		mf3_port ? (&addr[14:13] ? page_reg : page_reg_plus3) :
 		mmc_sel  ? mmc_dout                                   :
-		kemp_sel ? kemp_dout                                  :
+		(kemp_sel | mouse_sel) ? kemp_dout                    :
 		portBF   ? {page_scr_copy, 7'b1111111}                :
 		gs_sel   ? gs_dout                                    :
 		psg_rd   ? psg_dout                                   :
@@ -1751,6 +1751,24 @@ wire [15:0] cont2_key_s;
       ce_7mp
   );
 
+// Docked USB mouse report (Analogue's openFPGA bus-communication docs:
+// type 0x5 in cont4_key[31:28], report counter in cont4_key[15:0],
+// buttons in cont4_joy[31:16], relative X in cont4_joy[15:0], relative Y
+// in cont4_trig[15:0]) - synchronized into clk_sys the same way
+// cont1_key/cont2_key/cont3_key already are. A mouse report arrives at
+// most at the USB polling rate (>=1ms, >100,000 clk_sys cycles between
+// changes) - nowhere near fast enough for this plain synch_3 treatment to
+// ever miss a transition, unlike the keyboard's same-cycle multi-slot
+// case that needed a queue+handshake. See mouse.sv/core_top.sv's
+// instantiation below for why the report counter specifically still
+// needs gating by report type before use.
+wire [31:0] cont4_key_s;
+wire [31:0] cont4_joy_s;
+wire [15:0] cont4_trig_s;
+synch_3 #(.WIDTH(32)) cont4_key_sync  (cont4_key,  cont4_key_s,  clk_sys);
+synch_3 #(.WIDTH(32)) cont4_joy_sync  (cont4_joy,  cont4_joy_s,  clk_sys);
+synch_3 #(.WIDTH(16)) cont4_trig_sync (cont4_trig, cont4_trig_s, clk_sys);
+
 reg [4:0] key_data;
 initial begin
   vkb_keyrowFE<=5'b11111;  
@@ -2000,22 +2018,52 @@ keyboard kbd
 );
 
 wire       kemp_sel = addr[5:0] == 6'h1F;
-//reg  [7:0] kemp_dout;
+// Note: kemp_sel's partial 6-bit decode (pre-existing, not changed here)
+// happens to also match every Kempston Mouse port address (0xFADF/
+// 0xFBDF/0xFFDF all share the same low 6 bits as 0x1F). With the mouse
+// disabled in the menu, reading a mouse port therefore still returns
+// joystick data via kemp_dout's fallback rather than an empty-bus
+// response - harmless for any software using the canonical addresses,
+// but worth knowing about. Left alone deliberately (untouched,
+// pre-existing behaviour, out of scope for the mouse work below) rather
+// than tightened to a full addr[7:0]==8'h1F match without being able to
+// verify nothing relies on the current looser decode.
 
-wire [7:0] kemp_dout =  vkb_state?8'h00:{2'b00, joyk}; //disable kempton input when virtual keyboard is active
+// Docked USB mouse -> Kempston Mouse, direct from the cont4_* report
+// (see the cont4_*_s synchronizers above) - no PS/2 mouse packet
+// anywhere in this path. status[35:34]: 0=Disabled, nonzero=enabled;
+// status[35] doubles as the left/right button swap flag, matching
+// upstream MiSTer's own status[35] usage for the same purpose.
+wire       mouse_en   = |status[35:34];
+wire       is_mouse   = cont4_key_s[31:28] == 4'h5;
+// Hold the report counter at a fixed value whenever cont4 isn't
+// currently reporting a mouse, so mouse.v's "did the counter change"
+// check can never fire on an unrelated gamepad's cont4 traffic (which
+// uses a completely different layout at these same bit positions) -
+// see mouse.v's header comment.
+wire [15:0] mouse_counter = is_mouse ? cont4_key_s[15:0] : 16'h0;
+wire signed [15:0] mouse_dx = cont4_joy_s[15:0];
+wire signed [15:0] mouse_dy = cont4_trig_s[15:0];
+wire  [2:0] mouse_buttons   = cont4_joy_s[18:16]; // {middle,right,left}
 
-/*reg        kemp_mode = 0;
-always @(posedge clk_sys) begin
-	reg old_status = 0;
+wire        mouse_reg_sel;
+wire  [7:0] mouse_data;
+mouse u_mouse
+(
+	.clk_sys     ( clk_sys        ),
+	.reset       ( cold_reset     ),
+	.hid_counter ( mouse_counter  ),
+	.hid_dx      ( mouse_dx       ),
+	.hid_dy      ( mouse_dy       ),
+	.hid_buttons ( mouse_buttons  ),
+	.btn_swap    ( status[35]     ),
+	.addr        ( addr[10:8]     ),
+	.sel         ( mouse_reg_sel  ),
+	.dout        ( mouse_data     )
+);
+wire       mouse_sel = mouse_en & (addr[7:0] == 8'hDF) & mouse_reg_sel;
 
-	if(reset || joyk || !status[35:34]) kemp_mode <= 0;
-
-	old_status <= ps2_mouse[24];
-	if(old_status != ps2_mouse[24] && status[35:34]) kemp_mode <= 1;
-
-	kemp_dout <= kemp_mode ? mouse_data : {2'b00, joyk};
-end
-*/
+wire [7:0] kemp_dout =  vkb_state ? 8'h00 : mouse_sel ? mouse_data : {2'b00, joyk}; //disable kempton input when virtual keyboard is active
 // Player 1 / Player 2 Joystick type selectors - replaces the old single
 // shared jsel (status[19:17], now retired - see main.c). Each
 // independently picks Kempston/Sinclair I/Sinclair II/Cursor; the OSD

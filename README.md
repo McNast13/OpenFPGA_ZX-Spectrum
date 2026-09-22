@@ -33,6 +33,8 @@ boot.rom is a collection of required ROMs, however it does not contain a full se
 
 USB keyboard support - plug a USB keyboard into the Analogue Dock and it drives the Spectrum keyboard matrix directly. F1-F11 and Ctrl/Shift/Alt work as documented below.
 
+USB mouse support - plug a USB mouse into the Analogue Dock for Kempston Mouse emulation. Enable it in the "Mouse:" menu option (Kempston L/R or Kempston R/L to swap the left/right buttons). Driven directly from the Dock's mouse report - see `src/fpga/core/mouse.v`.
+
 Independent Player 1 / Player 2 Joystick type selectors (Start menu) - each of the two attached controllers can be set to Kempston, Sinclair I, Sinclair II or Cursor independently, for genuine 2-player games. The menu won't let both players select the same type at once.
 
 Key Mapped Joystick (P1) (allows Left, Right, Up, Down, A, B, X, Y, L Trig and R Trig on controller 1 to be mapped to keyboard keys) - now a separate on/off toggle rather than one of the Player 1 type choices, so it can be used alongside a Player 1 joystick type if desired.
@@ -81,6 +83,8 @@ Added - Real USB keyboard support via the Analogue Dock. `src/fpga/core/keyboard
 Fixed - `Fn`/`mod` (F-key and modifier shortcuts) were declared as `wire` but driven procedurally from the OSD soft CPU, which would fail synthesis. They are now driven correctly and merged with the hardware-keyboard source.
 
 Added - Independent Player 1 / Player 2 Joystick type selectors, replacing the old single shared Joystick option (which had unused, commented-out `cont2_key` wiring already sketched in - finished it properly instead). Each of the two attached controllers picks Kempston/Sinclair I/Sinclair II/Cursor independently; the two can never be set to the same type (enforced in the OSD menu itself). Key Mapped Joystick is now a separate on/off toggle for Player 1 rather than one of the shared type choices.
+
+Added - Real USB mouse support via the Analogue Dock (Kempston Mouse). `src/fpga/core/mouse.v` was already vendored from the original MiSTer core but entirely unused/dead code, wired for a PS/2 mouse packet the Pocket port never had a source for. Rewired to take the Dock's mouse report (cont4_key/cont4_joy/cont4_trig, type 0x5) directly instead - no PS/2 packet format anywhere in the path, same approach as the keyboard work above. The "Mouse:" menu option (Disabled/Kempston L/R/Kempston R/L) was already fully wired in the OSD firmware from before; only the RTL side needed connecting.
 
 ### v0.7.0-beta
 
