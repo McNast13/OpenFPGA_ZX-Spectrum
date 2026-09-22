@@ -29,13 +29,13 @@ module tb_mash;
 
     logic [71:0] live_mods;
     logic  [8:0] live_sc1, live_sc2, live_sc3, live_sc4, live_sc5, live_sc6;
-    hid2ps2_mod u_live_mod (.clk(~clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
-    hid2ps2_key u_live_sc1 (.clk(~clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
-    hid2ps2_key u_live_sc2 (.clk(~clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
-    hid2ps2_key u_live_sc3 (.clk(~clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
-    hid2ps2_key u_live_sc4 (.clk(~clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
-    hid2ps2_key u_live_sc5 (.clk(~clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
-    hid2ps2_key u_live_sc6 (.clk(~clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
+    hid2ps2_mod u_live_mod (.clk(clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
+    hid2ps2_key u_live_sc1 (.clk(clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
+    hid2ps2_key u_live_sc2 (.clk(clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
+    hid2ps2_key u_live_sc3 (.clk(clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
+    hid2ps2_key u_live_sc4 (.clk(clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
+    hid2ps2_key u_live_sc5 (.clk(clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
+    hid2ps2_key u_live_sc6 (.clk(clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
 
     function automatic logic code_is_live(input [8:0] code);
         begin
@@ -50,15 +50,18 @@ module tb_mash;
         end
     endfunction
 
+    reg [10:0] ps2_key_usb_r = 0; // matches core_top.sv's extra pipeline stage
+    always @(posedge clk_sys) ps2_key_usb_r <= ps2_key_usb;
+
     reg  [9:0] ps2_key_usb_prev = 0;
     reg        ps2_toggle       = 0;
     reg  [9:0] ps2_key_latched  = 0;
     always @(posedge clk_sys) begin
-        ps2_key_usb_prev <= ps2_key_usb[9:0];
-        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
-            if (ps2_key_usb[9] || !code_is_live(ps2_key_usb[8:0])) begin
+        ps2_key_usb_prev <= ps2_key_usb_r[9:0];
+        if (ps2_key_usb_r[10] && (ps2_key_usb_r[9:0] != ps2_key_usb_prev)) begin
+            if (ps2_key_usb_r[9] || !code_is_live(ps2_key_usb_r[8:0])) begin
                 ps2_toggle      <= ~ps2_toggle;
-                ps2_key_latched <= ps2_key_usb[9:0];
+                ps2_key_latched <= ps2_key_usb_r[9:0];
             end
         end
     end

@@ -39,6 +39,21 @@ appear). Changed all seven instances (both here and in `core_top.sv`) to
 the rising edge, matching everything downstream, for a full clock period
 of margin instead of half.
 
+That fix removed that specific path from CI's timing report entirely, but
+didn't fully close clk_sys setup timing on its own - the device is 93%
+ALM-full and was already marginal (-0.15ns) before any keyboard work
+existed. The *next* worst path after the edge fix ran from inside
+`kb_fifo` all the way to `core_top.sv`'s own `ps2_key_latched` register -
+the one register `keyboard.sv` actually reads pressed/code from, so
+occasional metastability landing there is about as consequential a place
+as this design has. `core_top.sv` now registers `usb_kbd`'s `ps2_key`
+output once (`ps2_key_usb_r`) before using it, splitting that single long
+combinational hop into two shorter ones - the same reasoning as the
+original `ps2_key` pipeline register early in this file's history, just
+correctly composed with the toggle/latch and suppression logic added
+since. Immediate (not just sustained-play) sticky keys were still
+reported with the edge fix alone; this pipeline register is the response.
+
 ## Local modification: `kb_fifo.sv`'s key-repeat controller is disabled
 
 Everything is otherwise unmodified from upstream. `kb_fifo.sv`'s "Key Repeat

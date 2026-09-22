@@ -2062,20 +2062,35 @@ endfunction
 // press right then jump, long press left, then all key presses are
 // sticky") after the compaction fix below; both failure modes reproduced
 // and this fix validated in src/fpga/core/usbkbd/tb_compaction_fix.sv.
+// ps2_key_usb is itself deeply combinational - kb_fifo -> key_arbiter ->
+// key_mgr -> usb_keyboard's ps2_key output, all in one cycle (this is the
+// same long single-hop that got a pipeline register early on in this
+// file's history, before the toggle/latch logic above existed). Adding
+// the suppression check on top made that hop longer still: CI's timing
+// report after the clocking-edge fix showed the new worst path running
+// all the way from inside kb_fifo to ps2_key_latched directly - the one
+// register keyboard.sv actually reads pressed/code from, so a marginal
+// path landing squarely on it is about as consequential a place for
+// occasional metastability to hit as this design has. Registering
+// ps2_key_usb here first splits that single long hop into two shorter
+// ones, the same way the original ps2_key pipeline register did.
+reg [10:0] ps2_key_usb_r = 0;
+always @(posedge clk_sys) ps2_key_usb_r <= ps2_key_usb;
+
 reg  [9:0] ps2_key_usb_prev = 0;
 reg        ps2_toggle       = 0;
 reg  [9:0] ps2_key_latched  = 0;
 always @(posedge clk_sys) begin
-	ps2_key_usb_prev <= ps2_key_usb[9:0];
-	if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
+	ps2_key_usb_prev <= ps2_key_usb_r[9:0];
+	if (ps2_key_usb_r[10] && (ps2_key_usb_r[9:0] != ps2_key_usb_prev)) begin
 		// Suppress a stale release (pressed=0) for a code that's still
 		// present in the live snapshot above - see the comment at
 		// ps2_code_is_live's declaration. Presses always pass through;
 		// this can only ever hold a release back, never fabricate or
 		// drop a press.
-		if (ps2_key_usb[9] || !ps2_code_is_live(ps2_key_usb[8:0])) begin
+		if (ps2_key_usb_r[9] || !ps2_code_is_live(ps2_key_usb_r[8:0])) begin
 			ps2_toggle      <= ~ps2_toggle;
-			ps2_key_latched <= ps2_key_usb[9:0];
+			ps2_key_latched <= ps2_key_usb_r[9:0];
 		end
 	end
 end

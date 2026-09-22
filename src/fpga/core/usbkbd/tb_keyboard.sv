@@ -31,14 +31,17 @@ module tb_keyboard;
         .ps2_key    ( ps2_key_usb )
     );
 
-    reg  [9:0] ps2_key_usb_prev = 0; // raw source value, ALWAYS updates - never gated
+    reg [10:0] ps2_key_usb_r = 0; // matches core_top.sv's extra pipeline stage
+    always @(posedge clk_sys) ps2_key_usb_r <= ps2_key_usb;
+
+    reg  [9:0] ps2_key_usb_prev = 0;
     reg        ps2_toggle       = 0;
     reg  [9:0] ps2_key_latched  = 0;
     always @(posedge clk_sys) begin
-        ps2_key_usb_prev <= ps2_key_usb[9:0];
-        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
+        ps2_key_usb_prev <= ps2_key_usb_r[9:0];
+        if (ps2_key_usb_r[10] && (ps2_key_usb_r[9:0] != ps2_key_usb_prev)) begin
             ps2_toggle      <= ~ps2_toggle;
-            ps2_key_latched <= ps2_key_usb[9:0];
+            ps2_key_latched <= ps2_key_usb_r[9:0];
         end
     end
     wire [10:0] ps2_key = {ps2_toggle, ps2_key_latched};

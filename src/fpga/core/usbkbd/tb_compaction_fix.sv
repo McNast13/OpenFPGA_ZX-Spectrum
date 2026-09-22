@@ -28,13 +28,13 @@ module tb_compaction_fix;
     // ---- live snapshot: independent re-translation, no slot tracking ----
     logic [71:0] live_mods;
     logic  [8:0] live_sc1, live_sc2, live_sc3, live_sc4, live_sc5, live_sc6;
-    hid2ps2_mod u_live_mod (.clk(~clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
-    hid2ps2_key u_live_sc1 (.clk(~clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
-    hid2ps2_key u_live_sc2 (.clk(~clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
-    hid2ps2_key u_live_sc3 (.clk(~clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
-    hid2ps2_key u_live_sc4 (.clk(~clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
-    hid2ps2_key u_live_sc5 (.clk(~clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
-    hid2ps2_key u_live_sc6 (.clk(~clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
+    hid2ps2_mod u_live_mod (.clk(clk_sys), .usb(usb_kb_mod), .ps2(live_mods));
+    hid2ps2_key u_live_sc1 (.clk(clk_sys), .usb(usb_kb_sc1), .ps2(live_sc1));
+    hid2ps2_key u_live_sc2 (.clk(clk_sys), .usb(usb_kb_sc2), .ps2(live_sc2));
+    hid2ps2_key u_live_sc3 (.clk(clk_sys), .usb(usb_kb_sc3), .ps2(live_sc3));
+    hid2ps2_key u_live_sc4 (.clk(clk_sys), .usb(usb_kb_sc4), .ps2(live_sc4));
+    hid2ps2_key u_live_sc5 (.clk(clk_sys), .usb(usb_kb_sc5), .ps2(live_sc5));
+    hid2ps2_key u_live_sc6 (.clk(clk_sys), .usb(usb_kb_sc6), .ps2(live_sc6));
 
     function automatic logic code_is_live(input [8:0] code);
         begin
@@ -49,35 +49,30 @@ module tb_compaction_fix;
         end
     endfunction
 
-    // ps2_key_usb_prev tracks the raw source value from the immediately
-    // preceding cycle, updated unconditionally every cycle. ps2_toggle/
+    // ps2_key_usb_seen tracks the last distinct SOURCE content evaluated
+    // (updates on every new event, forwarded or not); ps2_toggle/
     // ps2_key_latched are the OUTPUT and only change when an event passes
-    // the suppression check below. Comparing against anything OTHER than
-    // the raw previous-cycle value is a trap: comparing against the
-    // output latch leaves it holding stale content after a suppressed
-    // release, so a later genuine event with the same content looks
-    // unchanged and gets dropped too; comparing against a "last distinct
-    // content seen" register that updates even when suppressed is just as
-    // broken, since a release's content depends only on (pressed=0,code)
-    // - a suppressed release and that same key's real final release later
-    // carry IDENTICAL content, so that register stays "poisoned" and the
-    // real release never registers either. The raw previous-cycle value
-    // avoids both: it drifts through whatever the arbiter combinationally
-    // shows on intervening cycles (0 while scanning other slots, normally)
-    // regardless of what we chose to forward, so it can't get stuck.
-    reg  [9:0] ps2_key_usb_prev = 0;
+    // the suppression check. Comparing the "new event?" check against the
+    // OUTPUT latch instead (an earlier version of this fix did) leaves it
+    // holding stale content after a suppressed release - if a LATER
+    // genuine event's content ever coincidentally matches that stale
+    // value, it gets silently dropped too, regardless of its own code.
+    reg [10:0] ps2_key_usb_r = 0; // matches core_top.sv's extra pipeline stage
+    always @(posedge clk_sys) ps2_key_usb_r <= ps2_key_usb;
+
+    reg  [9:0] ps2_key_usb_prev = 0; // raw source value, ALWAYS updates - never gated
     reg        ps2_toggle       = 0;
     reg  [9:0] ps2_key_latched  = 0;
     always @(posedge clk_sys) begin
-        ps2_key_usb_prev <= ps2_key_usb[9:0];
-        if (ps2_key_usb[10] && (ps2_key_usb[9:0] != ps2_key_usb_prev)) begin
+        ps2_key_usb_prev <= ps2_key_usb_r[9:0];
+        if (ps2_key_usb_r[10] && (ps2_key_usb_r[9:0] != ps2_key_usb_prev)) begin
             // Suppress a stale release: if this is a release (pressed=0)
             // and the code is still present somewhere in the live,
             // slot-independent snapshot, the key hasn't really gone away
             // - it just moved HID slots. Presses always pass through.
-            if (ps2_key_usb[9] || !code_is_live(ps2_key_usb[8:0])) begin
+            if (ps2_key_usb_r[9] || !code_is_live(ps2_key_usb_r[8:0])) begin
                 ps2_toggle      <= ~ps2_toggle;
-                ps2_key_latched <= ps2_key_usb[9:0];
+                ps2_key_latched <= ps2_key_usb_r[9:0];
             end
         end
     end
