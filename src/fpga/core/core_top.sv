@@ -2076,12 +2076,20 @@ wire [15:0] mouse_counter_74a = is_mouse_74a ? cont4_key_s[15:0] : 16'h0;
 // full 16 bits as signed made left/right movement barely twitch a couple
 // of pixels before sticking, exactly the signature of a negative 8-bit
 // delta (high byte 0, not sign-extended) getting read as a huge positive
-// 16-bit number and instantly saturating the accumulator. Only the low
-// byte is the real delta; sign-extend from its own bit 7, ignore
-// whatever's in bits[15:8] entirely rather than trust it as part of the
-// value.
-wire signed [15:0] mouse_dx_74a = {{8{cont4_joy_s[7]}},  cont4_joy_s[7:0]};
-wire signed [15:0] mouse_dy_74a = {{8{cont4_trig_s[7]}}, cont4_trig_s[7:0]};
+// 16-bit number and instantly saturating the accumulator.
+//
+// The real delta byte sits at bits[15:8], not bits[7:0] - "little
+// endian byte order" here describes how the APF bridge packs a single
+// meaningful HID byte plus one reserved/padding byte into a 16-bit
+// register, and the SAME convention already confirmed working for the
+// keyboard's modifier byte (cont3_key[15:0], see apf2hid.sv) puts that
+// meaningful byte at the TOP, not the bottom: usb_kb_mod there reads
+// kb_scancodes[63:56], the high byte of that field, not the low byte.
+// A first attempt here read bits[7:0] (the reserved/always-zero byte)
+// instead, which produced a constant zero delta - confirmed on real
+// hardware as "buttons still work, no movement at all".
+wire signed [15:0] mouse_dx_74a = {{8{cont4_joy_s[15]}},  cont4_joy_s[15:8]};
+wire signed [15:0] mouse_dy_74a = {{8{cont4_trig_s[15]}}, cont4_trig_s[15:8]};
 wire  [2:0] mouse_buttons_74a   = cont4_joy_s[18:16]; // {middle,right,left}
 
 wire  [7:0] mouse_dx_74a_out, mouse_dy_74a_out;

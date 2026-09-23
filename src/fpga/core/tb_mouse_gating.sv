@@ -27,15 +27,17 @@ module tb_mouse_gating;
     // --- clk_74a side: gates mouse.v's accumulator ---
     wire       is_mouse_74a = cont4_key_s[31:28] == 4'h5;
     wire [15:0] mouse_counter_74a = is_mouse_74a ? cont4_key_s[15:0] : 16'h0;
-    // Only the low byte is the real HID delta (standard USB boot-mouse
-    // reports are 8-bit signed per axis) - sign-extend from its own bit
-    // 7, ignore bits[15:8] entirely. Treating the full 16 bits as signed
-    // (the first version of this code) misread every negative delta as
-    // a huge positive one whenever the host left the high byte at 0
-    // instead of sign-extending it - confirmed on real hardware (8BitDo
-    // wireless mouse: movement would barely twitch before sticking at
-    // the saturated extreme, exactly this bug's signature).
-    wire signed [15:0] mouse_dx_74a = {{8{cont4_joy_s[7]}}, cont4_joy_s[7:0]};
+    // The real HID delta byte sits at bits[15:8], not bits[7:0] - same
+    // "little endian byte order" convention already confirmed working
+    // for the keyboard's modifier byte (cont3_key[15:0] - see
+    // apf2hid.sv's usb_kb_mod, which reads the HIGH byte of that field).
+    // Two wrong versions preceded this one, both confirmed wrong on real
+    // hardware: treating the full 16 bits as signed (huge positive
+    // numbers from negative deltas, movement twitched near a stuck
+    // saturation extreme) and reading bits[7:0] - the reserved/always-
+    // zero byte - as the delta (constant zero, no movement at all,
+    // buttons unaffected since they're a different field).
+    wire signed [15:0] mouse_dx_74a = {{8{cont4_joy_s[15]}}, cont4_joy_s[15:8]};
     wire  [2:0] mouse_buttons_74a   = cont4_joy_s[18:16];
 
     // --- clk_sys side: Kempston Mouse I/O port decode ---
@@ -76,15 +78,19 @@ module tb_mouse_gating;
         cont4_joy_s = {13'h0, 1'b1 /*middle*/, 1'b0 /*right*/, 1'b1 /*left*/, 16'h0}; #1;
         check(mouse_buttons_74a === 3'b101, "button extraction: {middle,right,left} = 101");
 
-        // --- the real bug: negative 8-bit delta, high byte left at 0 ---
-        cont4_joy_s = {16'h0, 16'h00FB}; #1; // -5 as a raw byte (0xFB) in the low byte, high byte 0x00 (NOT sign-extended by the host)
-        check(mouse_dx_74a === -16'sd5, "negative delta (low byte 0xFB, high byte 0x00): reads as -5, not +251");
-        cont4_joy_s = {16'h0, 16'h0007}; #1; // +7, low byte only, high byte 0
-        check(mouse_dx_74a === 16'sd7, "positive delta (low byte 0x07): reads as +7");
-        cont4_joy_s = {16'h0, 16'h0080}; #1; // -128 (most negative 8-bit value), high byte 0
+        // --- the real bug (v1): full 16-bit signed misreads a negative
+        // delta as huge-positive when the low/reserved byte is 0 ---
+        cont4_joy_s = {16'h0, 16'hFB00}; #1; // -5 as a raw byte (0xFB) in the HIGH byte, low/reserved byte 0x00
+        check(mouse_dx_74a === -16'sd5, "negative delta (high byte 0xFB, low byte 0x00): reads as -5, not +251");
+        cont4_joy_s = {16'h0, 16'h0700}; #1; // +7, high byte only, low/reserved byte 0
+        check(mouse_dx_74a === 16'sd7, "positive delta (high byte 0x07): reads as +7");
+        cont4_joy_s = {16'h0, 16'h8000}; #1; // -128 (most negative 8-bit value), low/reserved byte 0
         check(mouse_dx_74a === -16'sd128, "most-negative 8-bit delta (0x80): reads as -128, not a huge positive number");
-        cont4_joy_s = {16'h0, 16'hABFB}; #1; // same -5 low byte, but high byte full of garbage
-        check(mouse_dx_74a === -16'sd5, "high byte is ignored entirely - garbage there doesn't change the result");
+        // --- the real bug (v2): reading the WRONG byte (low, reserved,
+        // always-zero) instead of the high byte reads as a constant
+        // zero regardless of actual movement ---
+        cont4_joy_s = {16'h0, 16'hFBAB}; #1; // same -5 in the high byte, but low/reserved byte full of garbage
+        check(mouse_dx_74a === -16'sd5, "low/reserved byte is ignored entirely - garbage there doesn't change the result");
 
         // --- clk_sys-side port decode ---
         // Mouse disabled in menu - mouse_sel must never assert even at
