@@ -2069,8 +2069,19 @@ wire       is_mouse_74a   = cont4_key_s[31:28] == 4'h5;
 // uses a completely different layout at these same bit positions) -
 // see mouse.v's header comment.
 wire [15:0] mouse_counter_74a = is_mouse_74a ? cont4_key_s[15:0] : 16'h0;
-wire signed [15:0] mouse_dx_74a = cont4_joy_s[15:0];
-wire signed [15:0] mouse_dy_74a = cont4_trig_s[15:0];
+// Analogue's docs call cont4_joy[15:0]/cont4_trig[15:0] a 16-bit signed
+// delta, but standard USB HID boot-mouse reports only ever carry an
+// 8-bit signed delta per axis (byte1/byte2 of the report: buttons, dx,
+// dy) - confirmed on real hardware (8BitDo wireless mouse): treating the
+// full 16 bits as signed made left/right movement barely twitch a couple
+// of pixels before sticking, exactly the signature of a negative 8-bit
+// delta (high byte 0, not sign-extended) getting read as a huge positive
+// 16-bit number and instantly saturating the accumulator. Only the low
+// byte is the real delta; sign-extend from its own bit 7, ignore
+// whatever's in bits[15:8] entirely rather than trust it as part of the
+// value.
+wire signed [15:0] mouse_dx_74a = {{8{cont4_joy_s[7]}},  cont4_joy_s[7:0]};
+wire signed [15:0] mouse_dy_74a = {{8{cont4_trig_s[7]}}, cont4_trig_s[7:0]};
 wire  [2:0] mouse_buttons_74a   = cont4_joy_s[18:16]; // {middle,right,left}
 
 wire  [7:0] mouse_dx_74a_out, mouse_dy_74a_out;

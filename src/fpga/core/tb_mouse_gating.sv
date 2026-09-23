@@ -27,7 +27,15 @@ module tb_mouse_gating;
     // --- clk_74a side: gates mouse.v's accumulator ---
     wire       is_mouse_74a = cont4_key_s[31:28] == 4'h5;
     wire [15:0] mouse_counter_74a = is_mouse_74a ? cont4_key_s[15:0] : 16'h0;
-    wire signed [15:0] mouse_dx_74a = cont4_joy_s[15:0];
+    // Only the low byte is the real HID delta (standard USB boot-mouse
+    // reports are 8-bit signed per axis) - sign-extend from its own bit
+    // 7, ignore bits[15:8] entirely. Treating the full 16 bits as signed
+    // (the first version of this code) misread every negative delta as
+    // a huge positive one whenever the host left the high byte at 0
+    // instead of sign-extending it - confirmed on real hardware (8BitDo
+    // wireless mouse: movement would barely twitch before sticking at
+    // the saturated extreme, exactly this bug's signature).
+    wire signed [15:0] mouse_dx_74a = {{8{cont4_joy_s[7]}}, cont4_joy_s[7:0]};
     wire  [2:0] mouse_buttons_74a   = cont4_joy_s[18:16];
 
     // --- clk_sys side: Kempston Mouse I/O port decode ---
@@ -67,6 +75,16 @@ module tb_mouse_gating;
 
         cont4_joy_s = {13'h0, 1'b1 /*middle*/, 1'b0 /*right*/, 1'b1 /*left*/, 16'h0}; #1;
         check(mouse_buttons_74a === 3'b101, "button extraction: {middle,right,left} = 101");
+
+        // --- the real bug: negative 8-bit delta, high byte left at 0 ---
+        cont4_joy_s = {16'h0, 16'h00FB}; #1; // -5 as a raw byte (0xFB) in the low byte, high byte 0x00 (NOT sign-extended by the host)
+        check(mouse_dx_74a === -16'sd5, "negative delta (low byte 0xFB, high byte 0x00): reads as -5, not +251");
+        cont4_joy_s = {16'h0, 16'h0007}; #1; // +7, low byte only, high byte 0
+        check(mouse_dx_74a === 16'sd7, "positive delta (low byte 0x07): reads as +7");
+        cont4_joy_s = {16'h0, 16'h0080}; #1; // -128 (most negative 8-bit value), high byte 0
+        check(mouse_dx_74a === -16'sd128, "most-negative 8-bit delta (0x80): reads as -128, not a huge positive number");
+        cont4_joy_s = {16'h0, 16'hABFB}; #1; // same -5 low byte, but high byte full of garbage
+        check(mouse_dx_74a === -16'sd5, "high byte is ignored entirely - garbage there doesn't change the result");
 
         // --- clk_sys-side port decode ---
         // Mouse disabled in menu - mouse_sel must never assert even at
