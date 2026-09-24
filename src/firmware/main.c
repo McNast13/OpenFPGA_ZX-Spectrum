@@ -320,12 +320,9 @@ int writeMenu()
 			v=(menuType[currmenu] [i+1] >> 24) & 0xff; //get state
 			if (v) writeString("Yes",osd_width-(3*8)-8,y); else writeString(" No",osd_width-(3*8)-8,y);
 		}
-		if (((menuType[currmenu] [i+1] >> 8) & 0xff) == 4) { //on/off
+		if (((menuType[currmenu] [i+1] >> 8) & 0xff) == 4) { //on/off		
 			v=(menuType[currmenu] [i+1] >> 24) & 0xff; //get state
 			if (v) writeString("Off",osd_width-(3*8)-8,y); else writeString(" On",osd_width-(3*8)-8,y);
-		}
-		if (((menuType[currmenu] [i+1] >> 8) & 0xff) == 7) { //debug live value - see IO_DEBUG_CONT
-			writeHex(IO_RW(IO_DEBUG_CONT),osd_width-(8*8)-8,y);
 		}
 		i++;
 		y+=8;
@@ -682,21 +679,9 @@ void initMenus() {
 	strcpyr(&menuItems[2] [5] [0],"Video Timings:");
 	strcpyr(&menuItems[2] [6] [0],"Memory:");
 	strcpyr(&menuItems[2] [7] [0],"MMC Mode:");
-	strcpyr(&menuItems[2] [8] [0],"MMC Version:");
-	strcpyr(&menuItems[2] [9] [0],"Debug: Controllers");
-	strcpyr(&menuItems[2] [10] [0],"END");
-
-	// Debug: Controllers (type 7) - live readout of IO_DEBUG_CONT, added
-	// to diagnose a report of Player 2's controller never registering
-	// input regardless of joystick protocol. Shows each cont1-4 slot's
-	// Analogue controller "type" nibble (0=none, 1=Pocket built-in,
-	// 2/3=docked controller, 4=docked keyboard, 5=docked mouse) plus
-	// cont2's raw button bits, refreshed every main-loop iteration while
-	// this menu is open - see the writeMenu() case-7 handler and main()'s
-	// loop. Not a normal selectable item - no list id/entries, no
-	// case-7 action in process_menu().
-	menuType[2] [9] = 0x00000700;
-
+	strcpyr(&menuItems[2] [8] [0],"MMC Version:");	
+	strcpyr(&menuItems[2] [9] [0],"END");
+	
 	menuType[2] [0] = 0x00000021;
 	menuType[2] [1] = 0x0d020222;
 	strcpyr(&menuLists[0x0d] [0] [0],"Issue 2");
@@ -1928,13 +1913,7 @@ int main(void)
 		}
 
 		processInput();
-
-		// Debug: Controllers is a live readout (IO_DEBUG_CONT), not a
-		// value that only changes on menu input - redraw every loop
-		// iteration while it's the open menu so it actually updates as
-		// you move a joypad, rather than only on the next button press.
-		if (menu_on && currmenu==2) writeMenu();
-
+		
 		//high 32 bits - status [63:32]
 		//low 32 bit - MMC Ver, Vert Crop, Scale, Snow Bug,
 		//SPEED REQ, (24:22) CPU Speed

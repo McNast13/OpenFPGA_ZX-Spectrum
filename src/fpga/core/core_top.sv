@@ -1439,16 +1439,8 @@ begin
 		//IO
 		//32'h3000_00D0:	pico_mem_rd<={31'h0,ram_ready};
 		
-		32'h3000_00_f0:	pico_mem_rd<={16'h0,cont1_key_s[15:0]};	//read joypad
-
-		// Debug: Analogue controller-bus "type" field ([31:28] of each
-		// cont*_key - see bus-communication docs) for all 4 slots, packed
-		// as nibbles, plus cont2's raw button bits - added to diagnose a
-		// report of Player 2's controller never registering input
-		// regardless of joystick protocol. Surfaced in the OSD's
-		// Hardware menu ("Debug: Controllers") - see main.c.
-		32'h3000_00_f4:	pico_mem_rd<={cont1_key_s[31:28], cont2_key_s[31:28], cont3_key_s[31:28], cont4_key_s[31:28], cont2_key_s[15:0]};
-
+		32'h3000_00_f0:	pico_mem_rd<={16'h0,cont1_key_s};	//read joypad
+		
 		32'h3000_02_00: pico_mem_rd<={status[31:25], speed_set ? speed_req : 3'b000, status[21:13], arch_set ? arch : snap_hwset ? snap_hw : status[12:8], status[7:0]};
 		32'h3000_02_04: pico_mem_rd<=status[63:32];
 		32'h3000_02_08: pico_mem_rd<={31'h0,status_set};
@@ -1736,21 +1728,10 @@ end
 
 ////////////////////   HID   ////////////////////
 
-// Full 32 bits, not just the low 16 - bits[31:28] carry Analogue's
-// controller "type" field (0x0=none, 0x1=Pocket's own buttons, 0x2/0x3=
-// docked controller, 0x4=docked keyboard, 0x5=docked mouse; see
-// bus-communication docs). Widened from a 16-bit sync (which silently
-// dropped that field) while diagnosing a report of Player 2's controller
-// never registering input in-game regardless of which joystick protocol
-// it was assigned - cont3_key_s/cont4_key_s (keyboard/mouse) were already
-// synced full-width and type-checked (is_mouse_74a below); cont1/cont2
-// never were, so there was no way to confirm what was actually in each
-// slot. All existing bit-index reads below (dpad/face buttons) are in the
-// low 16 bits and are unaffected by the width change.
-wire [31:0] cont1_key_s;
+wire [15:0] cont1_key_s;
 
   synch_3 #(
-      .WIDTH(32)
+      .WIDTH(16)
   ) cont1_s (
       cont1_key,
       cont1_key_s,
@@ -1760,10 +1741,10 @@ wire [31:0] cont1_key_s;
 // Second attached controller, for the independent Player 2 joystick
 // selector below - same treatment as cont1_key_s (matched clock, so the
 // two controllers' bits are sampled consistently relative to each other).
-wire [31:0] cont2_key_s;
+wire [15:0] cont2_key_s;
 
   synch_3 #(
-      .WIDTH(32)
+      .WIDTH(16)
   ) cont2_s (
       cont2_key,
       cont2_key_s,
