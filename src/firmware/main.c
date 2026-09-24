@@ -554,7 +554,7 @@ void initMenus() {
 	strcpyr(&menuLists[0x15] [1] [0],"   Sinclair I");
 	strcpyr(&menuLists[0x15] [2] [0],"  Sinclair II");
 	strcpyr(&menuLists[0x15] [3] [0],"       Cursor");
-	menuListVals[0x15]=2;			//default Player 2 = Sinclair II (non-conflicting with Player 1's default)
+	menuListVals[0x15]=1;			//default Player 2 = Sinclair I (non-conflicting with Player 1's default; more games offer a Kempston+Sinclair I pairing than Kempston+Sinclair II)
 
 	menuType[0] [6] = 0x0000040d;		//Key Mapped Joystick (P1) on/off, default off
 
