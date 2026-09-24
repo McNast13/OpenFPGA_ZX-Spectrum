@@ -417,8 +417,21 @@ void encode_status() {
 	status_bits[47]=(menuType[0] [6]>>24) & 0x01;	//Key Mapped Joystick (P1) on/off
 
 	uint32_t i;
-	
-	for (i=43;i<64;i++) { //zero unused bits
+
+	// "Unused" starts at 48, not 43 - bits 43-47 (Player 1/Player 2
+	// Joystick type, Key Mapped Joystick enable, just set above) are very
+	// much used. This boundary has been bumped once before, the same way,
+	// each time a new bit was added below it (see git history for the
+	// 42->43 move when Disk LED/bit 42 was added) - the P1/P2 joystick
+	// refactor that added 43-47 missed doing it again, so every menu
+	// interaction was zeroing these 5 bits back out immediately after
+	// setting them, right before they got sent to the core. In practice
+	// that pinned status[46:43] at 0 permanently regardless of what the
+	// OSD showed, which - combined with core_top.sv's joystick-select
+	// ternaries always taking the p1type==0 branch first - meant Kempston
+	// was hardwired to controller 1 no matter what either player's menu
+	// said, and Sinclair I/II/Cursor could never be selected by anyone.
+	for (i=48;i<64;i++) { //zero unused bits
 		status_bits[i]=0;
 	}
 	
