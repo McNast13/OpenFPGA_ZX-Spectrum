@@ -30,6 +30,8 @@ typedef unsigned char uint8_t;
 #define IO_DEBUG_ON	0xEC	//Pause the Z80 1=pause 0=run
 
 #define IO_JOYPAD 	0xF0
+//Debug: {cont1_type,cont2_type,cont3_type,cont4_type,cont2_key[15:0]} - see core_top.sv
+#define IO_DEBUG_CONT	0xF4
 #define IO_IOCTL_STATE 	0x800
 #define IO_IOCTL_ADDR 	0x804
 #define IO_ACK_FLAG 	0x808
